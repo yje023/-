@@ -20,5 +20,8 @@ export function setAssessorUnits(planId, unitIds) { return http.put(`/plans/${pl
 export function createGroup(planId, data) { return http.post(`/plans/${planId}/groups`, data) }
 export function updateGroup(id, data) { return http.put(`/groups/${id}`, data) }
 export function deleteGroup(id) { return http.delete(`/groups/${id}`) }
+export function batchDeleteGroups(ids) { return http.post('/groups/batch-delete', { ids }) }
+export function exportGroups(planId) { return http.get(`/plans/${planId}/groups/export`, { responseType: 'blob' }) }
+export function importGroups(planId, formData) { return http.post(`/plans/${planId}/groups/import`, formData) }
 
 export function getUnitsTree() { return http.get('/units-tree') }

@@ -50,7 +50,7 @@ def get_plan(plan_id):
     for d in p.evaluation_dimensions:
         ad = [{"id": a.id, "name": a.name, "sort_order": a.sort_order}
               for a in d.assessment_dimensions]
-        dims.append({"id": d.id, "name": d.name, "score": d.score, "is_actual_assessment": d.is_actual_assessment, "assessment_dimensions": ad})
+        dims.append({"id": d.id, "name": d.name, "score": d.score, "is_actual_assessment": d.is_actual_assessment, "is_bonus_deduction": d.is_bonus_deduction, "assessment_dimensions": ad})
 
     # 主考单位
     assessor_units = [{"id": u.id, "name": u.name, "org_name": u.organization.name if u.organization else ""} for u in p.assessor_units]
@@ -99,8 +99,9 @@ def create_plan():
     db.session.flush()
 
     # 自动创建"单位实际考核"评价维度（分值100分，等后续添加其他维度再调整）
-    dim = EvaluationDimension(name="单位实际考核", score=100, is_actual_assessment=True, plan_id=plan.id)
-    db.session.add(dim)
+    db.session.add(EvaluationDimension(name="单位实际考核", score=100, is_actual_assessment=True, plan_id=plan.id))
+    # 自动创建"加扣分事项"特殊维度（不计入100分，不可编辑/删除）
+    db.session.add(EvaluationDimension(name="加扣分事项", score=0, is_bonus_deduction=True, plan_id=plan.id))
 
     db.session.commit()
     return jsonify({"data": {"id": plan.id}, "msg": "创建成功"})
@@ -173,8 +174,8 @@ def issue_plan(plan_id):
     if not plan.assessed_groups:
         return jsonify({"msg": "请创建被考核分组"}), 400
 
-    # 校验所有评价维度分值合计=100
-    total = sum(d.score for d in plan.evaluation_dimensions)
+    # 校验所有评价维度分值合计=100（排除加扣分事项）
+    total = sum(d.score for d in plan.evaluation_dimensions if not d.is_bonus_deduction)
     if abs(total - 100) > 0.01:
         return jsonify({"msg": f"评价维度分值合计为{total}，应为100"}), 400
 
@@ -191,7 +192,7 @@ def _sync_actual_assessment_score(plan_id):
     actual = next((d for d in dims if d.is_actual_assessment), None)
     if not actual:
         return
-    other_total = sum(d.score for d in dims if not d.is_actual_assessment)
+    other_total = sum(d.score for d in dims if not d.is_actual_assessment and not d.is_bonus_deduction)
     actual.score = max(1, 100 - other_total)
     db.session.commit()
 
@@ -213,7 +214,7 @@ def add_dimension(plan_id):
         return jsonify({"msg": "分值必须大于0"}), 400
 
     score_f = float(score)
-    other_total = sum(d.score for d in plan.evaluation_dimensions if not d.is_actual_assessment)
+    other_total = sum(d.score for d in plan.evaluation_dimensions if not d.is_actual_assessment and not d.is_bonus_deduction)
     if other_total + score_f > 99:
         return jsonify({"msg": f"分值超限：其他维度合计{other_total}分，剩余{100 - other_total}分可用"}), 400
 
@@ -238,10 +239,12 @@ def update_dimension(dim_id):
         new_score = float(data["score"])
         if new_score <= 0:
             return jsonify({"msg": "分值必须大于0"}), 400
-        # 只允许修改非单位实际考核的维度分值
+        # 只允许修改非单位实际考核、非加扣分事项的维度分值
         if dim.is_actual_assessment:
             return jsonify({"msg": "单位实际考核分值自动计算，不可手动修改"}), 400
-        other_total = sum(d.score for d in EvaluationDimension.query.filter_by(plan_id=dim.plan_id).all() if not d.is_actual_assessment and d.id != dim.id)
+        if dim.is_bonus_deduction:
+            return jsonify({"msg": "加扣分事项为特殊维度，不可修改"}), 400
+        other_total = sum(d.score for d in EvaluationDimension.query.filter_by(plan_id=dim.plan_id).all() if not d.is_actual_assessment and not d.is_bonus_deduction and d.id != dim.id)
         if other_total + new_score > 99:
             return jsonify({"msg": f"分值超限：其他维度合计{other_total}分，剩余{100 - other_total}分可用"}), 400
         dim.score = new_score
@@ -259,6 +262,8 @@ def delete_dimension(dim_id):
         return jsonify({"msg": "维度不存在"}), 404
     if dim.is_actual_assessment:
         return jsonify({"msg": "单位实际考核维度不可删除"}), 400
+    if dim.is_bonus_deduction:
+        return jsonify({"msg": "加扣分事项为特殊维度，不可删除"}), 400
     plan_id = dim.plan_id
     db.session.delete(dim)
     db.session.flush()
@@ -408,6 +413,137 @@ def delete_group(group_id):
     db.session.delete(group)
     db.session.commit()
     return jsonify({"msg": "删除成功"})
+
+
+@plan_bp.route("/api/groups/batch-delete", methods=["POST"])
+@jwt_required()
+def batch_delete_groups():
+    ids = request.get_json().get("ids", [])
+    if not ids:
+        return jsonify({"msg": "请选择要删除的分组"}), 400
+    # 先清关联数据
+    GroupDimensionWeight.query.filter(GroupDimensionWeight.group_id.in_(ids)).delete(synchronize_session=False)
+    AssessedGroup.query.filter(AssessedGroup.id.in_(ids)).delete(synchronize_session=False)
+    db.session.commit()
+    return jsonify({"msg": f"已删除 {len(ids)} 个分组"})
+
+
+@plan_bp.route("/api/plans/<int:plan_id>/groups/export", methods=["GET"])
+@jwt_required()
+def export_groups(plan_id):
+    plan = Plan.query.get(plan_id)
+    if not plan:
+        return jsonify({"msg": "方案不存在"}), 404
+
+    from utils.xlsx_handler import export_xlsx
+    headers = ["分组名称", "被考核单位", "考核维度权重"]
+    rows = []
+    for g in plan.assessed_groups:
+        unit_names = "\n".join(u.name for u in g.units) if g.units else ""
+        weights_str = ", ".join(f"{w.assessment_dimension.name}:{w.weight}%" for w in g.dimension_weights if w.weight > 0 and w.assessment_dimension)
+        rows.append([g.name, unit_names, weights_str])
+
+    output = export_xlsx(headers, rows)
+    from flask import send_file
+    return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     as_attachment=True, download_name=f"被考核分组_{plan.name}.xlsx")
+
+
+@plan_bp.route("/api/plans/<int:plan_id>/groups/import", methods=["POST"])
+@jwt_required()
+def import_groups(plan_id):
+    plan = Plan.query.get(plan_id)
+    if not plan:
+        return jsonify({"msg": "方案不存在"}), 404
+
+    from flask import request
+    from openpyxl import load_workbook
+    import io
+
+    uploaded = request.files.get("file")
+    if not uploaded:
+        return jsonify({"msg": "请上传 xlsx 文件"}), 400
+
+    try:
+        wb = load_workbook(io.BytesIO(uploaded.read()))
+        ws = wb.active
+    except Exception:
+        return jsonify({"msg": "无法读取文件，请确认格式正确"}), 400
+
+    # 读表头，定位列索引
+    header_map = {}
+    for col in range(1, ws.max_column + 1):
+        val = str(ws.cell(row=1, column=col).value or "").strip()
+        if "分组名称" in val or "组名" in val:
+            header_map["name"] = col
+        elif "被考核单位" in val or "单位" in val:
+            header_map["units"] = col
+        elif "权重" in val or "维度" in val:
+            header_map["weights"] = col
+
+    if "name" not in header_map:
+        return jsonify({"msg": "缺少「分组名称」列"}), 400
+
+    # 构建维度名称→id 映射
+    dims = {d.name: d.id for d in AssessmentDimension.query.join(
+        EvaluationDimension).filter(EvaluationDimension.plan_id == plan_id).all()}
+
+    created = 0
+    errors = []
+    for row_idx in range(2, ws.max_row + 1):
+        name = str(ws.cell(row=row_idx, column=header_map["name"]).value or "").strip()
+        if not name:
+            continue
+
+        # 被考核单位
+        unit_ids = []
+        if "units" in header_map:
+            unit_str = str(ws.cell(row=row_idx, column=header_map["units"]).value or "").strip()
+            for unit_name in unit_str.replace("\n", ",").replace("，", ",").split(","):
+                unit_name = unit_name.strip()
+                if unit_name:
+                    u = Unit.query.filter_by(name=unit_name).first()
+                    if u:
+                        unit_ids.append(u.id)
+                    else:
+                        errors.append(f"第{row_idx}行：单位「{unit_name}」不存在")
+
+        # 维度权重
+        weights = []
+        if "weights" in header_map:
+            weight_str = str(ws.cell(row=row_idx, column=header_map["weights"]).value or "").strip()
+            for part in weight_str.replace("，", ",").split(","):
+                part = part.strip()
+                if ":" in part:
+                    dim_name, weight_val = part.split(":", 1)
+                    dim_name = dim_name.strip()
+                    try:
+                        weight_val = float(weight_val.replace("%", "").strip())
+                    except ValueError:
+                        continue
+                    dim_id = dims.get(dim_name)
+                    if dim_id:
+                        weights.append({"assessment_dimension_id": dim_id, "weight": weight_val})
+                    else:
+                        errors.append(f"第{row_idx}行：考核维度「{dim_name}」不存在")
+
+        group = AssessedGroup(name=name, plan_id=plan_id)
+        db.session.add(group)
+        db.session.flush()
+        if unit_ids:
+            group.units = Unit.query.filter(Unit.id.in_(unit_ids)).all()
+        for w in weights:
+            db.session.add(GroupDimensionWeight(group_id=group.id, **w))
+        created += 1
+
+    db.session.commit()
+
+    from flask import jsonify
+    return jsonify({
+        "msg": f"导入完成：创建 {created} 个分组" + (f"，{len(errors)} 条异常" if errors else ""),
+        "success": created,
+        "errors": errors,
+    })
 
 
 # ==================== 单位列表（供方案选择） ====================

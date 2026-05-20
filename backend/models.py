@@ -120,6 +120,7 @@ class EvaluationDimension(db.Model):
     name = db.Column(db.String(200), nullable=False, comment="维度名称")
     score = db.Column(db.Float, nullable=False, comment="分值")
     is_actual_assessment = db.Column(db.Boolean, default=False, comment="是否单位实际考核维度")
+    is_bonus_deduction = db.Column(db.Boolean, default=False, comment="是否加扣分事项维度")
     sort_order = db.Column(db.Integer, default=0)
 
     plan = db.relationship("Plan", back_populates="evaluation_dimensions")

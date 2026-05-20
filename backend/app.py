@@ -77,6 +77,20 @@ def serve_frontend(path):
     return {"msg": "前端文件未找到，请先构建前端: cd frontend && npm run build"}, 404
 
 
+def _migrate_add_column(table, col_name, col_type, default_val):
+    """SQLite 安全添加列（如已存在则跳过）"""
+    import sqlite3
+    conn = sqlite3.connect(app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", ""))
+    try:
+        cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+        if col_name not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT {default_val}")
+            conn.commit()
+            print(f"DB migration: added {table}.{col_name}")
+    finally:
+        conn.close()
+
+
 def _migrate_nullable_columns():
     """将 admin 表 FK 列改为可空，解除系统管理与生产数据的强耦合"""
     import sqlite3
@@ -134,11 +148,27 @@ def _migrate_nullable_columns():
         conn.close()
 
 
+def _backfill_bonus_deduction():
+    """为已有方案补充"加扣分事项"维度"""
+    from models import Plan, EvaluationDimension
+    with app.app_context():
+        plans = Plan.query.all()
+        for plan in plans:
+            existing = EvaluationDimension.query.filter_by(plan_id=plan.id, is_bonus_deduction=True).first()
+            if not existing:
+                db.session.add(EvaluationDimension(
+                    name="加扣分事项", score=0, is_bonus_deduction=True, plan_id=plan.id
+                ))
+        db.session.commit()
+
+
 def init_db():
     """初始化数据库"""
     with app.app_context():
         db.create_all()
+        _migrate_add_column("evaluation_dimension", "is_bonus_deduction", "BOOLEAN", "0")
         _migrate_nullable_columns()
+        _backfill_bonus_deduction()
 
 
 if __name__ == "__main__":

@@ -76,21 +76,32 @@
         <h4 style="margin-bottom:8px">评价维度（分值合计=100）<span style="font-weight:400;font-size:12px;color:#909399;margin-left:8px">剩余可分配：{{ remainingScore }} 分</span></h4>
         <el-table :data="detail.evaluation_dimensions || []" border size="small">
           <el-table-column prop="name" label="维度名称" />
-          <el-table-column prop="score" label="分值" width="80">
+          <el-table-column prop="score" label="分值" width="100">
             <template #default="{ row }">
-              <el-input-number v-if="!row.is_actual_assessment" v-model="row.score" :min="1" :max="remainingScore + row.score" size="small" controls-position="right" @change="saveDim($event, row)" />
+              <template v-if="row.is_bonus_deduction">
+                <span style="color:#909399;font-size:12px">不计入总分</span>
+              </template>
+              <template v-else-if="!row.is_actual_assessment">
+                <el-input-number v-model="row.score" :min="1" :max="remainingScore + row.score" size="small" controls-position="right" @change="saveDim($event, row)" />
+              </template>
               <span v-else>{{ row.score }} <el-tooltip content="单位实际考核分值 = 100 - 其他维度分，自动计算"><span style="color:#909399;font-size:12px;cursor:help">ⓘ</span></el-tooltip></span>
             </template>
           </el-table-column>
           <el-table-column label="类型" width="140">
             <template #default="{ row }">
               <el-tag v-if="row.is_actual_assessment" size="small" type="primary">单位实际考核</el-tag>
+              <el-tag v-else-if="row.is_bonus_deduction" size="small" type="danger">加扣分事项</el-tag>
               <el-tag v-else size="small">其他评价维度</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="180">
+          <el-table-column label="操作" width="200">
             <template #default="{ row }">
-              <template v-if="row.is_actual_assessment">
+              <template v-if="row.is_bonus_deduction">
+                <el-tooltip content="加扣分事项的考核维度在各单位算总分时编辑">
+                  <el-button size="small" disabled>添加考核维度</el-button>
+                </el-tooltip>
+              </template>
+              <template v-else-if="row.is_actual_assessment">
                 <el-button size="small" @click="openAddAssessmentDim(row)">添加考核维度</el-button>
               </template>
               <template v-else>
@@ -102,10 +113,10 @@
           <!-- 考核维度子表 -->
           <el-table-column type="expand">
             <template #default="{ row }">
-              <div v-if="row.is_actual_assessment && row.assessment_dimensions?.length" style="padding:8px 20px">
+              <div v-if="(row.is_actual_assessment || row.is_bonus_deduction) && row.assessment_dimensions?.length" style="padding:8px 20px">
                 <div v-for="ad in row.assessment_dimensions" :key="ad.id" style="display:flex;justify-content:space-between;align-items:center;padding:4px 0">
                   <span>{{ ad.name }}</span>
-                  <span>
+                  <span v-if="!row.is_bonus_deduction">
                     <el-button size="small" link @click="openEditAssessmentDim(ad)">编辑</el-button>
                     <el-button size="small" link type="danger" @click="handleDeleteAssessmentDim(ad)">删除</el-button>
                   </span>
@@ -119,10 +130,12 @@
         <el-divider />
 
         <!-- 主考单位 -->
-        <h4 style="margin-bottom:8px">主考单位</h4>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h4>主考单位</h4>
+          <el-button size="small" type="primary" @click="saveAssessorUnits">保存主考单位</el-button>
+        </div>
         <div style="margin-bottom:8px">
-          <el-tree ref="assessorTree" :data="unitsTree" show-checkbox node-key="id" :props="{ label: 'name', children: 'children' }" :check-strictly="false" default-expand-all style="max-height:200px;overflow:auto" @check="onAssessorCheck" />
-          <el-button size="small" type="primary" style="margin-top:4px" @click="saveAssessorUnits">保存主考单位</el-button>
+          <el-tree ref="assessorTree" :data="unitsTree" show-checkbox node-key="id" :props="{ label: 'name', children: 'children' }" :check-strictly="false" style="max-height:200px;overflow:auto" @check="onAssessorCheck" />
         </div>
 
         <el-divider />
@@ -130,11 +143,21 @@
         <!-- 被考核分组 -->
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <h4>被考核分组</h4>
-          <el-button size="small" type="primary" @click="openAddGroup">+ 新增分组</el-button>
+          <div>
+            <el-button v-if="checkedGroupIds.length" size="small" type="danger" @click="handleBatchDeleteGroups">批量删除({{ checkedGroupIds.length }})</el-button>
+            <el-upload :show-file-list="false" :before-upload="handleImportGroups" accept=".xlsx,.xls" style="display:inline-block;margin-left:4px">
+              <el-button size="small">导入分组</el-button>
+            </el-upload>
+            <el-button size="small" @click="handleExportGroups" style="margin-left:4px">导出分组</el-button>
+            <el-button size="small" type="primary" @click="openAddGroup" style="margin-left:4px">+ 新增分组</el-button>
+          </div>
         </div>
         <div v-for="g in detail.assessed_groups" :key="g.id" style="border:1px solid #e6e6e6;border-radius:4px;padding:12px;margin-bottom:8px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-            <strong>{{ g.name }}</strong>
+            <div>
+              <el-checkbox :model-value="checkedGroupIds.includes(g.id)" @change="(val) => onGroupCheckChange(g.id, val)" style="margin-right:8px" />
+              <strong>{{ g.name }}</strong>
+            </div>
             <span>
               <el-button size="small" link @click="openEditGroup(g)">编辑</el-button>
               <el-button size="small" link type="danger" @click="handleDeleteGroup(g)">删除</el-button>
@@ -142,7 +165,7 @@
           </div>
           <div style="font-size:13px;color:#606266">被考核单位：<el-tag v-for="u in g.units" :key="u.id" size="small" style="margin:1px">{{ u.name }}</el-tag><span v-if="!g.units?.length">无</span></div>
           <div style="font-size:13px;color:#606266;margin-top:4px">考核维度权重：
-            <el-tag v-for="w in g.dimension_weights" :key="w.assessment_dimension_id" size="small" type="warning" style="margin:1px">{{ w.dimension_name }} {{ w.weight }}%</el-tag>
+            <el-tag v-for="w in g.dimension_weights" v-if="w.weight > 0" :key="w.assessment_dimension_id" size="small" type="warning" style="margin:1px">{{ w.dimension_name }} {{ w.weight }}%</el-tag>
           </div>
         </div>
       </template>
@@ -168,7 +191,7 @@
       <el-form>
         <el-form-item label="分组名称"><el-input v-model="groupForm.name" placeholder="如：第一组" /></el-form-item>
         <el-form-item label="被考核单位">
-          <el-tree ref="groupUnitTree" :data="unitsTree" show-checkbox node-key="id" :props="{ label: 'name', children: 'children', disabled: isOrg }" default-expand-all style="max-height:200px;overflow:auto" />
+          <el-tree ref="groupUnitTree" :data="unitsTree" show-checkbox node-key="id" :props="{ label: 'name', children: 'children' }" style="max-height:200px;overflow:auto" />
         </el-form-item>
         <el-form-item label="考核维度权重（合计=100%）">
           <div v-for="ad in actualAssessmentDims" :key="ad.id" style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
@@ -226,7 +249,7 @@ async function handleSave() {
   try {
     const data = { name: form.name, year: form.year, start_date: form.start_date, end_date: form.end_date }
     if (isEdit.value) { await api.updatePlan(editId.value, data); ElMessage.success('编辑成功') }
-    else { await api.createPlan(data); ElMessage.success('创建成功，已自动创建"单位实际考核"维度') }
+    else { await api.createPlan(data); ElMessage.success('创建成功，已自动创建"单位实际考核"和"加扣分事项"维度') }
     dialogVisible.value = false; await loadPlans()
   } catch {}
 }
@@ -246,7 +269,7 @@ const detailVisible = ref(false); const detail = ref(null)
 const remainingScore = computed(() => {
   if (!detail.value?.evaluation_dimensions) return 100
   const otherTotal = detail.value.evaluation_dimensions
-    .filter(d => !d.is_actual_assessment)
+    .filter(d => !d.is_actual_assessment && !d.is_bonus_deduction)
     .reduce((sum, d) => sum + d.score, 0)
   return Math.max(0, 100 - otherTotal)
 })
@@ -348,7 +371,45 @@ async function handleSaveGroup() {
 }
 async function handleDeleteGroup(g) {
   await ElMessageBox.confirm(`确定删除分组「${g.name}」？`, '确认', { type: 'warning' })
-  try { await api.deleteGroup(g.id); await refreshDetail() } catch {}
+  try { await api.deleteGroup(g.id); ElMessage.success('删除成功'); await refreshDetail() } catch {}
+}
+
+// 分组批量操作
+const checkedGroupIds = ref([])
+function onGroupCheckChange(gid, val) {
+  if (val) { checkedGroupIds.value.push(gid) }
+  else { checkedGroupIds.value = checkedGroupIds.value.filter(id => id !== gid) }
+}
+async function handleBatchDeleteGroups() {
+  await ElMessageBox.confirm(`确定删除选中的 ${checkedGroupIds.value.length} 个分组？此操作不可恢复。`, '批量删除', { type: 'warning' })
+  try {
+    await api.batchDeleteGroups(checkedGroupIds.value)
+    ElMessage.success('批量删除成功')
+    checkedGroupIds.value = []
+    await refreshDetail()
+  } catch {}
+}
+function handleExportGroups() {
+  if (!detail.value) return
+  api.exportGroups(detail.value.id).then(res => {
+    const blob = new Blob([res.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `被考核分组_${detail.value.name}.xlsx`; a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  }).catch(() => {})
+}
+async function handleImportGroups(file) {
+  if (!detail.value) { ElMessage.warning('请先打开方案详情'); return false }
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await api.importGroups(detail.value.id, fd)
+    ElMessage.success(res.msg || '导入成功')
+    await refreshDetail()
+  } catch {}
+  return false
 }
 
 onMounted(() => { loadPlans(); loadUnitsTree() })
