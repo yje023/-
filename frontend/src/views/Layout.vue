@@ -52,6 +52,10 @@
           </el-menu-item>
         </el-sub-menu>
       </el-menu>
+
+      <div class="version-info" @click="showVersionHistory">
+        <span>{{ versionCurrent }}</span>
+      </div>
     </el-aside>
     <el-container>
       <el-header class="top-header">
@@ -88,6 +92,26 @@
     </el-container>
   </el-container>
 
+  <!-- 版本历史 -->
+  <el-dialog v-model="versionDialogVisible" title="版本历史" width="600px">
+    <el-timeline>
+      <el-timeline-item
+        v-for="v in versionHistory"
+        :key="v.version"
+        :timestamp="v.date"
+        placement="top"
+      >
+        <el-card shadow="hover">
+          <h4>{{ v.label }}</h4>
+          <p style="color:#909399;margin:0">{{ v.message }}</p>
+        </el-card>
+      </el-timeline-item>
+    </el-timeline>
+    <template #footer>
+      <el-button @click="versionDialogVisible = false">关闭</el-button>
+    </template>
+  </el-dialog>
+
   <!-- 修改密码 -->
   <el-dialog v-model="pwdDialogVisible" title="修改密码" width="400px">
     <el-form ref="pwdFormRef" :model="pwdForm" :rules="pwdRules">
@@ -114,6 +138,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../store/auth'
 import { changePasswordApi } from '../api/auth'
 import { ElMessage } from 'element-plus'
+import http from '../api/index'
 
 const route = useRoute()
 const router = useRouter()
@@ -121,7 +146,25 @@ const auth = useAuthStore()
 
 const activeMenu = computed(() => route.path)
 
+// 版本信息
+const versionCurrent = ref('')
+const versionHistory = ref([])
+const versionDialogVisible = ref(false)
+
+async function fetchVersion() {
+  try {
+    const res = await http.get('/version')
+    versionCurrent.value = res.data?.current || ''
+    versionHistory.value = res.data?.history || []
+  } catch {}
+}
+
+function showVersionHistory() {
+  versionDialogVisible.value = true
+}
+
 onMounted(async () => {
+  fetchVersion()
   if (!auth.userInfo) {
     try { await auth.fetchUserInfo() } catch {}
   }
@@ -181,6 +224,9 @@ async function handleSwitchIdentity() {
 </script>
 
 <style scoped>
+.sidebar {
+  position: relative;
+}
 .logo {
   height: 60px;
   line-height: 60px;
@@ -204,5 +250,22 @@ async function handleSwitchIdentity() {
 .header-left, .header-right {
   display: flex;
   align-items: center;
+}
+.version-info {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  background: #263445;
+  cursor: pointer;
+  text-align: center;
+  box-sizing: border-box;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.version-info:hover {
+  color: rgba(255, 255, 255, 0.75);
 }
 </style>

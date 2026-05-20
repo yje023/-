@@ -10,6 +10,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('frontend/dist', 'frontend'),
+        ('backend/version.json', '.'),
     ],
     hiddenimports=[
         'flask_sqlalchemy',

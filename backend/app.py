@@ -47,6 +47,22 @@ def health():
     return {"status": "ok", "message": "黔江区多维度精准考核评价系统运行中"}
 
 
+@app.route("/api/version")
+def get_version():
+    """返回当前版本信息和版本历史"""
+    import json
+    if getattr(sys, 'frozen', False):
+        version_file = os.path.join(sys._MEIPASS, "version.json")
+    else:
+        version_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.json")
+    try:
+        with open(version_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {"current": data["current"], "history": data["history"]}
+    except Exception:
+        return {"current": "开发版", "history": []}
+
+
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path):
