@@ -1,0 +1,33 @@
+:root {
+  --primary: #409eff;
+  --primary-light: #ecf5ff;
+  --sidebar-bg: #304156;
+  --sidebar-text: #bfcbd9;
+  --sidebar-active: #409eff;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body, #app { height: 100%; width: 100%; }
+
+body { font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif; }
+
+/* 侧边栏 */
+.sidebar { background: var(--sidebar-bg); }
+.sidebar .el-menu { border-right: none; }
+
+/* 主内容区 */
+.main-container { padding: 20px; background: #f0f2f5; min-height: calc(100vh - 60px); }
+
+/* 表格卡片 */
+.content-card { background: #fff; border-radius: 4px; padding: 20px; }
+
+/* 搜索栏 */
+.search-bar { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+.search-bar .el-input, .search-bar .el-select { width: 200px; }
+
+/* 操作按钮区 */
+.action-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+
+/* 分页 */
+.pagination-wrap { display: flex; justify-content: flex-end; margin-top: 16px; }
