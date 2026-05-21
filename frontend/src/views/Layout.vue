@@ -258,12 +258,13 @@ async function handleSwitchIdentity() {
   width: 100%;
   padding: 10px 16px;
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.6);
   background: #263445;
   cursor: pointer;
   text-align: center;
   box-sizing: border-box;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  z-index: 10;
 }
 .version-info:hover {
   color: rgba(255, 255, 255, 0.75);

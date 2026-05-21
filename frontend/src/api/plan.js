@@ -1,6 +1,6 @@
 import http from './index'
 
-export function getPlans() { return http.get('/plans') }
+export function getPlans(params) { return http.get('/plans', { params }) }
 export function getPlan(id) { return http.get(`/plans/${id}`) }
 export function createPlan(data) { return http.post('/plans', data) }
 export function updatePlan(id, data) { return http.put(`/plans/${id}`, data) }
