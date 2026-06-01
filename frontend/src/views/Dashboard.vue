@@ -3,6 +3,9 @@
     <!-- 顶部导航栏 -->
     <header class="cockpit-header">
       <div class="header-left">
+        <el-button size="small" class="back-btn" @click="$router.push('/orgs')" title="进入系统后台">
+          <el-icon><Menu /></el-icon>
+        </el-button>
         <el-select v-model="filterYear" placeholder="考核年度" style="width:120px" @change="loadAll">
           <el-option v-for="y in years" :key="y" :label="String(y)" :value="y" />
         </el-select>
@@ -337,6 +340,8 @@ onUnmounted(() => { disposeAll(); window.removeEventListener('resize', onResize)
 
 .cockpit-header { display:flex; align-items:center; justify-content:space-between; padding:8px 20px; background:linear-gradient(180deg,#111844,#0f1535); border-bottom:1px solid #1a2358; position:sticky; top:0; z-index:100; }
 .header-left, .header-right { display:flex; align-items:center; gap:4px; flex-shrink:0; }
+.back-btn { background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.3); color:#00d4ff; padding:4px 8px; }
+.back-btn:hover { background:rgba(0,212,255,0.25); border-color:#00d4ff; }
 .header-title { font-size:20px; font-weight:700; background:linear-gradient(90deg,#00d4ff,#a855f7); -webkit-background-clip:text; -webkit-text-fill-color:transparent; letter-spacing:4px; white-space:nowrap; }
 
 .cockpit-body { display:grid; grid-template-columns:1fr 1.15fr 1fr; gap:12px; padding:12px; max-width:1920px; margin:0 auto; height:calc(100vh - 58px); overflow-y:auto; }
