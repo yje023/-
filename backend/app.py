@@ -50,6 +50,7 @@ from routes.dashboard import dashboard_bp
 from routes.checklist import checklist_bp
 from routes.cadre import cadre_bp
 from routes.assessment_result import result_bp
+from routes.quality_check import qc_bp
 app.register_blueprint(auth_bp)
 app.register_blueprint(org_bp)
 app.register_blueprint(unit_bp)
@@ -61,6 +62,7 @@ app.register_blueprint(dashboard_bp)
 app.register_blueprint(checklist_bp)
 app.register_blueprint(cadre_bp)
 app.register_blueprint(result_bp)
+app.register_blueprint(qc_bp)
 
 
 def _get_frontend_dir():

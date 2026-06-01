@@ -58,6 +58,10 @@
             <el-icon><List /></el-icon>
             <span>考核任务</span>
           </el-menu-item>
+          <el-menu-item index="/quality-check">
+            <el-icon><Checked /></el-icon>
+            <span>任务质检</span>
+          </el-menu-item>
         </el-sub-menu>
       </el-menu>
 
