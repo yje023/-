@@ -66,14 +66,19 @@ def list_tasks():
                  .filter(Unit.name.contains(search))
         elif search_type == "period":
             q = q.filter(Task.review_period.contains(search))
-        else:  # all
+        else:  # all — 搜索全部字段（含关联表）
+            q = q.outerjoin(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
+                 .outerjoin(Unit, db.or_(Task.unit_id == Unit.id, Task.assessor_unit_id == Unit.id))
             q = q.filter(
                 db.or_(
                     Task.key_work.contains(search),
                     Task.main_task.contains(search),
                     Task.scoring_note.contains(search),
+                    Task.review_period.contains(search),
+                    AssessmentDimension.name.contains(search),
+                    Unit.name.contains(search),
                 )
-            )
+            ).distinct()
 
     # 发布单位(系统管理员)看全部；被考核单位只看自己的；主考单位看评价部门是自己的
     is_publisher = user and user.role and user.role.is_system
@@ -950,7 +955,13 @@ def export_tasks():
         kws = [x.strip() for x in key_works.split(",") if x.strip()]
         if kws: q = q.filter(db.or_(*[Task.key_work.contains(kw) for kw in kws]))
     if search:
-        q = q.filter(db.or_(Task.key_work.contains(search), Task.main_task.contains(search), Task.scoring_note.contains(search)))
+        q = q.outerjoin(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
+             .outerjoin(Unit, db.or_(Task.unit_id == Unit.id, Task.assessor_unit_id == Unit.id))
+        q = q.filter(db.or_(
+            Task.key_work.contains(search), Task.main_task.contains(search),
+            Task.scoring_note.contains(search), Task.review_period.contains(search),
+            AssessmentDimension.name.contains(search), Unit.name.contains(search),
+        )).distinct()
 
     # 权限过滤
     is_publisher = user and user.role and user.role.is_system
