@@ -9,7 +9,7 @@
         <el-option v-for="t in issueTypes" :key="t" :label="t" :value="t" />
       </el-select>
       <el-button v-if="allIssues.length" @click="loadIssues">刷新</el-button>
-      <el-button @click="$router.push('/quality-check/manage')">问题管理 →</el-button>
+      <el-button @click="openManageDialog">问题管理</el-button>
     </div>
 
     <!-- 统计卡片 -->
@@ -100,6 +100,41 @@
         <el-button @click="editVisible = false">取消</el-button>
         <el-button type="primary" @click="saveEdit">保存并更正全部</el-button>
       </template>
+    </el-dialog>
+
+    <!-- 问题管理弹窗 -->
+    <el-dialog v-model="manageVisible" title="问题管理" width="900px">
+      <div class="search-bar" style="margin-bottom:12px">
+        <el-select v-model="mFilterType" placeholder="问题类型" clearable style="width:180px">
+          <el-option v-for="t in mIssueTypes" :key="t" :label="t" :value="t" />
+        </el-select>
+        <el-select v-model="mFilterStatus" placeholder="状态" clearable style="width:140px;margin-left:8px">
+          <el-option label="确认无误" value="confirmed" />
+          <el-option label="已修复" value="resolved" />
+          <el-option label="已移除" value="ignored" />
+        </el-select>
+        <el-button @click="loadManageIssues">刷新</el-button>
+      </div>
+      <el-table :data="mFiltered" border stripe max-height="500">
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.status === 'confirmed' ? 'warning' : row.status === 'resolved' ? 'success' : 'info'">
+              {{ row.status === 'confirmed' ? '确认无误' : row.status === 'resolved' ? '已修复' : '已移除' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="130">
+          <template #default="{ row }"><el-tag size="small" type="info">{{ row.issue_type }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="问题内容" min-width="200">
+          <template #default="{ row }"><span class="cell-wrap">{{ row.text }}</span></template>
+        </el-table-column>
+        <el-table-column label="操作" width="80">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" link @click="undoManageIssue(row)">撤回</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </el-dialog>
   </div>
 </template>
@@ -261,6 +296,36 @@ async function saveEdit() {
     editVisible.value = false; editTaskId.value = null
     loadIssues()
   } catch (_) { ElMessage.error('保存失败') }
+}
+
+// 问题管理弹窗
+const manageVisible = ref(false)
+const mFilterType = ref(''); const mFilterStatus = ref('')
+const mAllIssues = ref([])
+const mIssueTypes = computed(() => [...new Set(mAllIssues.value.map(i => i.issue_type))].sort())
+const mFiltered = computed(() => {
+  let arr = mAllIssues.value.filter(i => i.status !== 'pending')
+  if (mFilterType.value) arr = arr.filter(i => i.issue_type === mFilterType.value)
+  if (mFilterStatus.value) arr = arr.filter(i => i.status === mFilterStatus.value)
+  return arr
+})
+
+async function openManageDialog() {
+  manageVisible.value = true; await loadManageIssues()
+}
+async function loadManageIssues() {
+  if (!filterPlanId.value) return
+  try {
+    const r = await http.get('/quality-check/issues', { params: { plan_id: filterPlanId.value, page_size: 500 } })
+    mAllIssues.value = (r.data?.data?.items || r.data?.items || [])
+  } catch (_) { }
+}
+async function undoManageIssue(row) {
+  try {
+    await http.put(`/quality-check/issues/${row.id}`, { status: 'pending' })
+    row.status = 'pending'
+    ElMessage.success('已撤回'); loadManageIssues(); loadIssues()
+  } catch (_) { ElMessage.error('撤回失败') }
 }
 
 onMounted(() => { loadPlans(); loadUnits() })

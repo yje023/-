@@ -26,13 +26,18 @@ def _hash_text(text):
     return hashlib.md5(text.encode("utf-8", errors="ignore")).hexdigest()
 
 
-def _is_confirmed_pattern(issue):
-    """检查该问题是否已被确认无误（同类型+同文本）"""
+def _load_confirmed_hashes():
+    """预加载所有已确认的模式哈希，避免逐个查询数据库"""
+    patterns = ConfirmedPattern.query.all()
+    return set((p.issue_type, p.text_hash) for p in patterns)
+
+
+def _is_confirmed_pattern(issue, confirmed_hashes):
+    """检查该问题是否已被确认无误（内存匹配）"""
     text = issue.get("text", "")
     if not text:
         return False
-    h = _hash_text(text)
-    return ConfirmedPattern.query.filter_by(issue_type=issue["issue_type"], text_hash=h).first() is not None
+    return (issue["issue_type"], _hash_text(text)) in confirmed_hashes
 
 
 def run_quality_check(plan_id=None):
@@ -47,12 +52,14 @@ def run_quality_check(plan_id=None):
     if plan_id:
         QualityIssue.query.filter_by(plan_id=plan_id, status="pending").delete()
 
+    # 预加载已确认模式（避免 DB 逐条查询）
+    confirmed_hashes = _load_confirmed_hashes()
+
     all_issues = []
 
     def save_issues(issues_list):
         for iss in issues_list:
-            # 跳过已确认无误的模式
-            if _is_confirmed_pattern(iss):
+            if _is_confirmed_pattern(iss, confirmed_hashes):
                 continue
             qi = QualityIssue(
                 plan_id=plan_id,
@@ -131,6 +138,20 @@ TEXT_COLS = ["key_task", "main_task", "scoring_rule"]
 COL_LABELS = {"key_task": "重点工作", "main_task": "主要任务", "scoring_rule": "评分说明"}
 
 
+# 预建同音字索引：wrong_word -> (correct, label)
+_HOMOPHONE_INDEX = {}
+for _w, _c in HOMOPHONE_CONFUSIONS:
+    if _w not in _HOMOPHONE_INDEX or len(_w) > 1:
+        _HOMOPHONE_INDEX[_w] = (_c, "high")
+
+# 预建形近字索引
+_SHAPE_INDEX = {}
+for _ec, _cc, _tw_list in SHAPE_CONFUSIONS:
+    for _tw in _tw_list:
+        _wrong_tw = _tw.replace(_cc, _ec)
+        _SHAPE_INDEX[_wrong_tw] = (_tw, f"{_ec}/{_cc}混淆", "medium")
+
+
 def _check_typos(rows):
     issues = []
     for row in rows:
@@ -140,33 +161,29 @@ def _check_typos(rows):
                 continue
             col_name = COL_LABELS.get(col, col)
 
-            # 同音字
-            for wrong, correct in HOMOPHONE_CONFUSIONS:
-                if wrong in text:
-                    idx = text.find(wrong)
+            # 同音字：遍历文本中每个词检查是否在索引中
+            for wrong, (correct, confidence) in _HOMOPHONE_INDEX.items():
+                idx = text.find(wrong)
+                if idx >= 0:
                     ctx = text[max(0, idx - 10):idx + len(wrong) + 10]
                     issues.append({
                         "task_id": row["seq"], "unit_name": row["unit_name"],
                         "column": col_name, "issue_type": "错别字-同音混淆",
                         "text": wrong, "suggestion": f'"{wrong}"应为"{correct}"',
-                        "context": ctx, "confidence": "high",
+                        "context": ctx, "confidence": confidence,
                     })
 
             # 形近字
-            for error_char, correct_char, triggers in SHAPE_CONFUSIONS:
-                if error_char not in text:
-                    continue
-                for tw in triggers:
-                    wrong_tw = tw.replace(correct_char, error_char)
-                    if wrong_tw in text:
-                        idx = text.find(wrong_tw)
-                        ctx = text[max(0, idx - 10):idx + len(wrong_tw) + 10]
-                        issues.append({
-                            "task_id": row["seq"], "unit_name": row["unit_name"],
-                            "column": col_name, "issue_type": "错别字-形近混淆",
-                            "text": wrong_tw, "suggestion": f'"{wrong_tw}"应为"{tw}"({error_char}/{correct_char}混淆)',
-                            "context": ctx, "confidence": "medium",
-                        })
+            for wrong_tw, (correct_tw, desc, confidence) in _SHAPE_INDEX.items():
+                idx = text.find(wrong_tw)
+                if idx >= 0:
+                    ctx = text[max(0, idx - 10):idx + len(wrong_tw) + 10]
+                    issues.append({
+                        "task_id": row["seq"], "unit_name": row["unit_name"],
+                        "column": col_name, "issue_type": "错别字-形近混淆",
+                        "text": wrong_tw, "suggestion": f'"{wrong_tw}"应为"{correct_tw}"({desc})',
+                        "context": ctx, "confidence": confidence,
+                    })
 
             # 年份异常
             for m in re.finditer(r"202[0-4]\d", text):
@@ -349,44 +366,55 @@ def _check_duplicates(rows):
         unit_groups[row["unit_name"]].append(row)
 
     duplicates = []
+    # 限制每个单位最多 60 个任务参与比较
     for unit_name, group in unit_groups.items():
-        n = len(group)
+        n = min(len(group), 60)
+        # 预计算 n-gram 集合，避免重复计算
+        precomputed = []
         for i in range(n):
+            kw = group[i]["key_task"].strip()
+            full = f"{kw} {group[i]['main_task'].strip()}"
+            precomputed.append({
+                "idx": i,
+                "dept": group[i]["eval_dept"],
+                "kw": kw,
+                "kw_ng": _char_ngrams(kw) if kw else set(),
+                "full_ng": _char_ngrams(full) if full else set(),
+            })
+
+        for i in range(n):
+            pi = precomputed[i]
             for j in range(i + 1, n):
-                dept_a = group[i]["eval_dept"]
-                dept_b = group[j]["eval_dept"]
-                if dept_a == dept_b:
+                pj = precomputed[j]
+                if pi["dept"] == pj["dept"]:
                     continue
-
-                kw_a = group[i]["key_task"].strip()
-                kw_b = group[j]["key_task"].strip()
-
-                # 精确匹配
-                if kw_a and kw_a == kw_b:
+                if pi["kw"] and pi["kw"] == pj["kw"]:
                     duplicates.append({
-                        "task_id": group[i]["seq"], "task_id_b": group[j]["seq"],
+                        "task_id": group[pi["idx"]]["seq"], "task_id_b": group[pj["idx"]]["seq"],
                         "unit_name": unit_name, "column": "重点工作",
                         "issue_type": "重复任务-精确匹配",
-                        "text": kw_a,
-                        "suggestion": f'"{dept_a}"和"{dept_b}"分配了相同重点工作',
-                        "context": f'{dept_a} ←→ {dept_b}', "confidence": "high",
+                        "text": pi["kw"],
+                        "suggestion": f'"{pi["dept"]}"和"{pj["dept"]}"分配了相同重点工作',
+                        "context": f'{pi["dept"]} ←→ {pj["dept"]}', "confidence": "high",
                         "similarity": 1.0,
                     })
                     continue
 
-                # 语义相似
-                full_a = f"{kw_a} {group[i]['main_task'].strip()}"
-                full_b = f"{kw_b} {group[j]['main_task'].strip()}"
-                key_sim = _jaccard_sim(kw_a, kw_b)
-                full_sim = _jaccard_sim(full_a, full_b)
+                # 快速过滤：key_task 字符数差太多跳过
+                if abs(len(pi["kw"]) - len(pj["kw"])) > 10:
+                    continue
+
+                # 语义相似（用预计算 n-gram）
+                key_sim = _ngram_sim(pi["kw_ng"], pj["kw_ng"])
+                full_sim = _ngram_sim(pi["full_ng"], pj["full_ng"])
                 if key_sim >= 0.72 or full_sim >= 0.68:
                     duplicates.append({
-                        "task_id": group[i]["seq"], "task_id_b": group[j]["seq"],
+                        "task_id": group[pi["idx"]]["seq"], "task_id_b": group[pj["idx"]]["seq"],
                         "unit_name": unit_name, "column": "重点工作/主要任务",
                         "issue_type": "重复任务-语义相似",
-                        "text": f'{kw_a[:30]} ≈ {kw_b[:30]}',
-                        "suggestion": f'"{dept_a}"和"{dept_b}"分配了相似任务',
-                        "context": f'{dept_a} ←→ {dept_b}', "confidence": "medium",
+                        "text": f'{pi["kw"][:30]} ≈ {pj["kw"][:30]}',
+                        "suggestion": f'"{pi["dept"]}"和"{pj["dept"]}"分配了相似任务',
+                        "context": f'{pi["dept"]} ←→ {pj["dept"]}', "confidence": "medium",
                         "similarity": round(max(key_sim, full_sim), 3),
                     })
 
@@ -400,3 +428,10 @@ def _check_duplicates(rows):
             seen.add(key)
             unique.append(d)
     return unique[:500]
+
+
+def _ngram_sim(ng1, ng2):
+    """从预计算的 n-gram 集合直接计算 Jaccard"""
+    if not ng1 or not ng2:
+        return 0.0
+    return len(ng1 & ng2) / len(ng1 | ng2)

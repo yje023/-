@@ -62,10 +62,6 @@
             <el-icon><Checked /></el-icon>
             <span>任务质检</span>
           </el-menu-item>
-          <el-menu-item index="/quality-check/manage">
-            <el-icon><Collection /></el-icon>
-            <span>问题管理</span>
-          </el-menu-item>
         </el-sub-menu>
       </el-menu>
 

@@ -31,7 +31,6 @@ const routes = [
       { path: 'plans', name: 'Plans', component: () => import('../views/Plans.vue'), meta: { title: '考核方案' } },
       { path: 'tasks', name: 'Tasks', component: () => import('../views/Tasks.vue'), meta: { title: '考核任务' } },
       { path: 'quality-check', name: 'QualityCheck', component: () => import('../views/QualityCheck.vue'), meta: { title: '任务质检' } },
-      { path: 'quality-check/manage', name: 'IssueManage', component: () => import('../views/IssueManage.vue'), meta: { title: '问题管理' } },
     ],
   },
 ]
