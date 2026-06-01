@@ -147,6 +147,18 @@ import http from '../api/index'
 
 const filterYear = ref(2026); const filterPlanId = ref(null)
 const globalSearch = ref(''); const resultTab = ref('正职')
+const loading = ref(false)
+
+function startResultScroll() {
+  const wrap = document.querySelector('.result-table-wrap')
+  if (!wrap) return
+  let dir = 1
+  setInterval(function() {
+    if (wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight) dir = -1
+    if (wrap.scrollTop <= 0) dir = 1
+    wrap.scrollTop += dir * 0.5
+  }, 80)
+}
 const years = [2024, 2025, 2026, 2027]
 
 const plans = ref([])
@@ -191,6 +203,7 @@ function charts() {
       })
       mk(sunburstChart, {
         tooltip: { trigger: 'item' },
+        animationDuration: 1200, animationEasing: 'cubicOut',
         series: [{ type: 'sunburst', radius: ['15%', '82%'], data: sunData,
           label: { color: '#e2e8f0', fontSize: 9 }, itemStyle: { borderColor: '#0a0e27', borderWidth: 1 } }]
       })
@@ -201,7 +214,8 @@ function charts() {
     var totalData = total > 0
       ? [{ value: total, name: '总人数', itemStyle: { color: '#00d4ff' } }]
       : [{ value: 1, name: '暂无', itemStyle: { color: '#334155' } }]
-    mk(totalRingChart, { series: [{ type: 'pie', radius: ['60%', '85%'], data: totalData, label: { show: false }, emphasis: { scale: false } }] })
+    mk(totalRingChart, { animationDuration: 1000, animationEasing: 'cubicOut',
+      series: [{ type: 'pie', radius: ['60%', '85%'], data: totalData, label: { show: false }, emphasis: { scale: false } }] })
 
     // -- 年龄段 --
     var ages = cadreStats.value.age_groups || []
@@ -209,6 +223,7 @@ function charts() {
       var ageColors = ['#00d4ff', '#10b981', '#f59e0b', '#ef4444']
       var ageData = ages.map(function(d, i) { return { value: d.value, itemStyle: { color: ageColors[i] } } })
       mk(ageBarChart, {
+        animationDuration: 1000, animationEasing: 'elasticOut', animationDelay: function(idx) { return idx * 150 },
         grid: { left: 5, right: 5, top: 5, bottom: 5 }, xAxis: { type: 'value', show: false },
         yAxis: { type: 'category', data: ages.map(function(d) { return d.name }), axisLabel: { color: '#94a3b8', fontSize: 9 }, axisLine: { show: false } },
         series: [{ type: 'bar', data: ageData, barWidth: 10, label: { show: true, position: 'right', color: '#94a3b8', fontSize: 9 } }]
@@ -220,6 +235,7 @@ function charts() {
     if (pol.length) {
       var polColors = ['#ef4444', '#00d4ff', '#10b981']
       mk(politicalChart, {
+        animationDuration: 1000, animationEasing: 'elasticOut', animationDelay: function(idx) { return idx * 200 },
         grid: { left: 5, right: 20, top: 10, bottom: 5 },
         xAxis: { type: 'category', data: pol.map(function(d) { return d.name }), axisLabel: { color: '#94a3b8', fontSize: 9 } },
         yAxis: { type: 'value', show: false },
@@ -231,8 +247,9 @@ function charts() {
     // -- 民族 --
     var eth = cadreStats.value.ethnicity || []
     if (eth.length) mk(ethnicityChart, {
+      animationDuration: 800, animationEasing: 'cubicOut',
       tooltip: { trigger: 'item' },
-      series: [{ type: 'pie', radius: ['40%', '70%'],
+      series: [{ type: 'pie', radius: ['40%', '70%'], animationType: 'scale',
         data: eth.map(function(d, i) { return { name: d.name, value: d.value, itemStyle: { color: COLORS[i % 8] } } }),
         label: { color: '#94a3b8', fontSize: 8 } }]
     })
@@ -240,6 +257,7 @@ function charts() {
     // -- 专业矩形树图 --
     var spec = cadreStats.value.specialty || []
     if (spec.length) mk(specialtyCloud, {
+      animationDuration: 1000, animationEasing: 'cubicOut',
       tooltip: {}, series: [{ type: 'treemap', roam: false, nodeClick: false, breadcrumb: { show: false },
         data: spec.slice(0, 15).map(function(d) { return { name: d.name, value: d.value } }),
         label: { color: '#e2e8f0', fontSize: 8 }, itemStyle: { borderColor: '#0a0e27', gapWidth: 1 },
@@ -249,6 +267,7 @@ function charts() {
     // -- 擅长领域矩形树图 --
     var exp = cadreStats.value.expertise || []
     if (exp.length) mk(expertiseTree, {
+      animationDuration: 1000, animationEasing: 'cubicOut',
       tooltip: {}, series: [{ type: 'treemap', roam: false, nodeClick: false, breadcrumb: { show: false },
         data: exp.slice(0, 20).map(function(d) { return { name: d.name, value: d.value } }),
         label: { color: '#e2e8f0', fontSize: 8 }, itemStyle: { borderColor: '#0a0e27', gapWidth: 1 },
@@ -257,7 +276,7 @@ function charts() {
 
     // -- 仪表盘 --
     var rate = taskProgress.value.completion_rate || 0
-    mk(progressGauge, { series: [{ type: 'gauge', startAngle: 210, endAngle: -30, radius: '85%',
+    mk(progressGauge, { series: [{ type: 'gauge', startAngle: 210, endAngle: -30, radius: '85%', animationDuration: 1500, animationEasing: 'cubicInOut',
       progress: { show: true, width: 12, itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0, colorStops: [{ offset: 0, color: '#00d4ff' }, { offset: 1, color: '#a855f7' }] } } },
       axisLine: { lineStyle: { width: 12, color: [[1, '#1a2358']] } }, axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
       anchor: { show: false }, title: { show: false },
@@ -267,11 +286,15 @@ function charts() {
     // -- 桑基图 --
     var flow = flowData.value
     if (flow.nodes && flow.nodes.length) mk(sankeyChart, {
+      animationDuration: 1200, animationEasing: 'cubicOut',
       tooltip: { trigger: 'item' }, series: [{ type: 'sankey', layout: 'none', emphasis: { focus: 'adjacency' }, nodeAlign: 'left',
         data: flow.nodes.map(function(n, i) { return { name: n.name, itemStyle: { color: COLORS[i % 8] } } }),
         links: flow.links.map(function(l) { return { source: l.source, target: l.target, value: l.value } }),
         label: { color: '#94a3b8', fontSize: 8 } }]
     })
+
+    // 延迟启动结果表滚动
+    setTimeout(startResultScroll, 500)
   })
 }
 
@@ -280,6 +303,7 @@ async function loadPlans() {
 }
 
 async function loadAll() {
+  loading.value = true
   try {
     const [ov, cs, tp, fl, rs, td] = await Promise.all([
       getDashboardOverview(filterPlanId.value),
@@ -297,7 +321,7 @@ async function loadAll() {
     decompData.value = td.data?.data || decompData.value
     decompStats.value = decompData.value.stats || decompStats.value
     charts()
-  } catch(_){}
+  } catch(_){} finally { loading.value = false }
 }
 
 let rt; function onResize() { clearTimeout(rt); rt = setTimeout(() => chartInstances.forEach(c => { try { c.resize() } catch(_){} }), 200) }

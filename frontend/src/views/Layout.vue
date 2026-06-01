@@ -1,6 +1,6 @@
 <template>
   <el-container style="height:100vh">
-    <el-aside width="220px" class="sidebar">
+    <el-aside v-if="!isCockpit" width="220px" class="sidebar">
       <div class="logo">精准考核系统</div>
       <el-menu
         :default-active="activeMenu"
@@ -61,12 +61,12 @@
         </el-sub-menu>
       </el-menu>
 
-      <div class="version-info" @click="showVersionHistory">
+      <div v-if="!isCockpit" class="version-info" @click="showVersionHistory">
         <span>{{ versionCurrent }}</span>
       </div>
     </el-aside>
     <el-container>
-      <el-header class="top-header">
+      <el-header v-if="!isCockpit" class="top-header">
         <div class="header-left">
           <el-tag
             :type="auth.currentIdentity === 'assessor' ? 'primary' : 'success'"
@@ -151,6 +151,7 @@ import http from '../api/index'
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const isCockpit = computed(() => route.path === '/dashboard')
 
 const activeMenu = computed(() => route.path)
 
