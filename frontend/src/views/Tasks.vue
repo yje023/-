@@ -4,17 +4,11 @@
       <el-select v-model="filterPlanId" placeholder="筛选方案" clearable @change="onFilterChange" style="width:200px">
         <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
       </el-select>
-      <el-select v-model="filterDimIds" placeholder="考核维度" multiple collapse-tags collapse-tags-tooltip clearable @change="onSearch" style="width:200px">
-        <el-option v-for="d in filterOpts.dimensions" :key="d.id" :label="d.name" :value="d.id" />
-      </el-select>
-      <el-select v-model="filterKeyWorks" placeholder="重点工作" multiple collapse-tags collapse-tags-tooltip clearable filterable @change="onSearch" style="width:200px">
-        <el-option v-for="k in filterOpts.key_works" :key="k" :label="k" :value="k" />
-      </el-select>
-      <el-select v-model="filterAssessorIds" placeholder="评价部门" multiple collapse-tags collapse-tags-tooltip clearable filterable @change="onSearch" style="width:200px">
-        <el-option v-for="u in filterOpts.assessor_units" :key="u.id" :label="u.name" :value="u.id" />
-      </el-select>
-      <el-select v-model="filterUnitIds" placeholder="被考核单位" multiple collapse-tags collapse-tags-tooltip clearable filterable @change="onSearch" style="width:200px">
-        <el-option v-for="u in filterOpts.assessed_units" :key="u.id" :label="u.name" :value="u.id" />
+      <el-select v-model="chipCategory" placeholder="选择筛选维度" @change="onChipCategoryChange" style="width:150px">
+        <el-option label="考核维度" value="dimension" />
+        <el-option label="重点工作" value="key_work" />
+        <el-option label="评价部门" value="assessor" />
+        <el-option label="被考核单位" value="unit" />
       </el-select>
       <el-select v-model="filterStatus" placeholder="筛选状态" clearable @change="onFilterChange" style="width:140px">
         <el-option label="待填报" value="pending" />
@@ -22,6 +16,24 @@
         <el-option label="已审核" value="reviewed" />
       </el-select>
       <el-input v-model="searchKey" placeholder="文字搜索..." clearable @clear="onSearch" @keyup.enter="onSearch" style="width:160px" />
+      <el-button type="primary" @click="applyChipFilter" :disabled="!chipCategory || chipSelected.length === 0">搜索选中({{ chipSelected.length }})</el-button>
+      <el-button v-if="chipSelected.length" @click="clearChipFilter">清除筛选</el-button>
+    </div>
+
+    <!-- 方片筛选区 -->
+    <div v-if="chipCategory && chipOptions.length" class="chip-filter-area">
+      <div class="chip-grid">
+        <div
+          v-for="item in chipOptions" :key="item.id || item"
+          :class="['chip-item', { active: isChipSelected(item) }]"
+          @click="toggleChip(item)"
+        >
+          {{ item.name || item }}
+        </div>
+      </div>
+    </div>
+
+    <div class="search-bar">
       <template v-if="auth.currentIdentity==='assessor'">
         <el-button type="primary" @click="openCreate">新建任务</el-button>
         <el-button @click="downloadTpl">下载导入模板</el-button>
@@ -194,16 +206,43 @@ const pageSize = ref(20)
 const searchKey = ref('')
 const filterPlanId = ref(null)
 const filterStatus = ref('')
-const filterDimIds = ref([])
-const filterKeyWorks = ref([])
-const filterAssessorIds = ref([])
-const filterUnitIds = ref([])
-const filterOpts = ref({ dimensions: [], key_works: [], assessor_units: [], assessed_units: [] })
 const selectedRows = ref([])
-function onSelectionChange(rows) { selectedRows.value = rows }
 
+// 方片筛选
+const chipCategory = ref('')
+const chipOptions = ref([])
+const chipSelected = ref([])
+const filterOpts = ref({ dimensions: [], key_works: [], assessor_units: [], assessed_units: [] })
+
+function onSelectionChange(rows) { selectedRows.value = rows }
 function onSearch() { currentPage.value = 1; loadTasks() }
-function onFilterChange() { currentPage.value = 1; filterDimIds.value = []; filterKeyWorks.value = []; filterAssessorIds.value = []; filterUnitIds.value = []; loadFilterOpts(); loadTasks() }
+function onFilterChange() { currentPage.value = 1; chipCategory.value = ''; chipOptions.value = []; chipSelected.value = []; loadFilterOpts(); loadTasks() }
+
+function onChipCategoryChange() {
+  chipSelected.value = []
+  const opts = filterOpts.value
+  if (chipCategory.value === 'dimension') chipOptions.value = opts.dimensions || []
+  else if (chipCategory.value === 'key_work') chipOptions.value = (opts.key_works || []).map(k => ({ id: k, name: k }))
+  else if (chipCategory.value === 'assessor') chipOptions.value = opts.assessor_units || []
+  else if (chipCategory.value === 'unit') chipOptions.value = opts.assessed_units || []
+  else chipOptions.value = []
+}
+
+function isChipSelected(item) {
+  const id = item.id || item
+  return chipSelected.value.some(s => (s.id || s) === id)
+}
+
+function toggleChip(item) {
+  const id = item.id || item
+  const idx = chipSelected.value.findIndex(s => (s.id || s) === id)
+  if (idx >= 0) chipSelected.value.splice(idx, 1)
+  else chipSelected.value.push(item)
+}
+
+function applyChipFilter() { currentPage.value = 1; loadTasks() }
+
+function clearChipFilter() { chipSelected.value = []; currentPage.value = 1; loadTasks() }
 
 function onPageSizeChange(size) {
   pageSize.value = size
@@ -228,10 +267,12 @@ async function loadTasks() {
   if (searchKey.value) { params.search = searchKey.value }
   if (filterPlanId.value) params.plan_id = filterPlanId.value
   if (filterStatus.value) params.status = filterStatus.value
-  if (filterDimIds.value.length) params.dimension_ids = filterDimIds.value.join(',')
-  if (filterKeyWorks.value.length) params.key_works = filterKeyWorks.value.join(',')
-  if (filterAssessorIds.value.length) params.assessor_unit_id = filterAssessorIds.value[0]
-  if (filterUnitIds.value.length) params.unit_id = filterUnitIds.value[0]
+  if (chipSelected.value.length) {
+    if (chipCategory.value === 'dimension') params.dimension_ids = chipSelected.value.map(c => c.id).join(',')
+    else if (chipCategory.value === 'key_work') params.key_works = chipSelected.value.map(c => c.name || c).join(',')
+    else if (chipCategory.value === 'assessor') params.assessor_unit_id = chipSelected.value.map(c => c.id).join(',')
+    else if (chipCategory.value === 'unit') params.unit_id = chipSelected.value.map(c => c.id).join(',')
+  }
   try {
     const r = await api.getTasks(params)
     if (r.data?.items) {
@@ -418,3 +459,11 @@ async function handleExportAll() {
 
 onMounted(async () => { await loadPlansData(); await loadFilterOpts(); loadAllUnits(); loadTasks() })
 </script>
+
+<style scoped>
+.chip-filter-area { margin-bottom: 14px; padding: 12px; background: #f5f7fa; border-radius: 8px; border: 1px solid #e4e7ed; }
+.chip-grid { display: flex; flex-wrap: wrap; gap: 8px; max-height: 200px; overflow-y: auto; }
+.chip-item { display: inline-block; padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; background: #fff; border: 1px solid #dcdfe6; color: #606266; transition: all 0.2s; user-select: none; white-space: nowrap; }
+.chip-item:hover { border-color: #409eff; color: #409eff; }
+.chip-item.active { background: #409eff; color: #fff; border-color: #409eff; }
+</style>

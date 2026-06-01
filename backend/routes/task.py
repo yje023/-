@@ -34,9 +34,13 @@ def list_tasks():
     if status:
         q = q.filter(Task.status == status)
     if assessor_unit_id:
-        q = q.filter(Task.assessor_unit_id == assessor_unit_id)
+        ids = [int(x) for x in str(assessor_unit_id).split(",") if x.strip().isdigit()]
+        if ids:
+            q = q.filter(Task.assessor_unit_id.in_(ids))
     if unit_id:
-        q = q.filter(Task.unit_id == unit_id)
+        ids = [int(x) for x in str(unit_id).split(",") if x.strip().isdigit()]
+        if ids:
+            q = q.filter(Task.unit_id.in_(ids))
     if dimension_ids:
         ids = [int(x) for x in dimension_ids.split(",") if x.strip().isdigit()]
         if ids:
