@@ -29,8 +29,8 @@
           <div class="card-title">任务解构管理</div>
           <div ref="sunburstChart" class="chart-box" style="height:200px"></div>
           <div class="card-stats-row">
-            <div class="stat-item"><span class="stat-num">{{ decompStats.precise }}</span><span class="stat-label">精准解构数</span></div>
-            <div class="stat-item"><span class="stat-num">{{ decompStats.declared }}</span><span class="stat-label">主动申报数</span></div>
+            <div class="stat-item"><span class="stat-num">{{ decompStats.precise_count }}</span><span class="stat-label">精准解构数</span></div>
+            <div class="stat-item"><span class="stat-num">{{ decompStats.declared_count }}</span><span class="stat-label">主动申报数</span></div>
           </div>
         </div>
 
@@ -167,7 +167,7 @@ const years = [2024, 2025, 2026, 2027]
 
 const plans = ref([])
 const overview = ref({ stats:{}, dim_stats:[], unit_completion:[], status_dist:{}, period_dist:{}, recent_activity:[] })
-const decompStats = ref({ precise:0, declared:0, total:0 })
+const decompStats = ref({ precise_count:0, declared_count:0, total_count:0 })
 const cadreStats = ref({ total:0, gender:{}, education:[], political:[], ethnicity:[], specialty:[], expertise:[], age_groups:[] })
 const taskProgress = ref({ total:0, status_cards:[], dim_stats:[], completion_rate:0 })
 const results = ref([]); const flowData = ref({ nodes:[], links:[] }); const decompData = ref({ sunburst:[], dim_list:[] })
@@ -308,24 +308,40 @@ async function loadPlans() {
 
 async function loadAll() {
   loading.value = true
-  try {
-    const [ov, cs, tp, fl, rs, td] = await Promise.all([
-      getDashboardOverview(filterPlanId.value),
-      http.get('/dashboard/cadre-stats'),
-      http.get('/dashboard/task-progress', { params: { plan_id: filterPlanId.value } }),
-      http.get('/dashboard/flow', { params: { plan_id: filterPlanId.value } }),
-      http.get('/dashboard/results', { params: { plan_year: filterYear.value } }),
-      http.get('/dashboard/task-decomp', { params: { plan_id: filterPlanId.value } }),
-    ])
-    overview.value = ov.data || overview.value
-    cadreStats.value = cs.data || cadreStats.value
-    taskProgress.value = tp.data || taskProgress.value
-    flowData.value = fl.data || flowData.value
-    results.value = rs.data || []
-    decompData.value = td.data || decompData.value
-    decompStats.value = decompData.value.stats || decompStats.value
-    charts()
-  } catch(_){} finally { loading.value = false }
+  // 每个 API 独立加载，一个失败不影响其他
+  async function safeCall(key, fetcher) {
+    try {
+      const res = await fetcher()
+      return { key, data: res?.data ?? null, ok: true }
+    } catch (e) {
+      console.error(`Dashboard ${key} 加载失败:`, e)
+      return { key, data: null, ok: false }
+    }
+  }
+  const results_arr = await Promise.all([
+    safeCall('overview', () => getDashboardOverview(filterPlanId.value)),
+    safeCall('cadreStats', () => http.get('/dashboard/cadre-stats')),
+    safeCall('taskProgress', () => http.get('/dashboard/task-progress', { params: { plan_id: filterPlanId.value } })),
+    safeCall('flow', () => http.get('/dashboard/flow', { params: { plan_id: filterPlanId.value } })),
+    safeCall('results', () => http.get('/dashboard/results', { params: { plan_year: filterYear.value } })),
+    safeCall('taskDecomp', () => http.get('/dashboard/task-decomp', { params: { plan_id: filterPlanId.value } })),
+  ])
+  for (const r of results_arr) {
+    if (!r.ok || r.data === null) continue
+    switch (r.key) {
+      case 'overview': overview.value = r.data; break
+      case 'cadreStats': cadreStats.value = r.data; break
+      case 'taskProgress': taskProgress.value = r.data; break
+      case 'flow': flowData.value = r.data; break
+      case 'results': results.value = r.data; break
+      case 'taskDecomp':
+        decompData.value = r.data
+        decompStats.value = r.data.stats || decompStats.value
+        break
+    }
+  }
+  charts()
+  loading.value = false
 }
 
 let rt; function onResize() { clearTimeout(rt); rt = setTimeout(() => chartInstances.forEach(c => { try { c.resize() } catch(_){} }), 200) }
