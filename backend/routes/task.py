@@ -20,8 +20,8 @@ def list_tasks():
     status = request.args.get("status", "").strip()
     search = request.args.get("search", "").strip()
     search_type = request.args.get("search_type", "all").strip()
-    assessor_unit_id = request.args.get("assessor_unit_id", type=int)
-    unit_id = request.args.get("unit_id", type=int)
+    assessor_unit_id = request.args.get("assessor_unit_id", "").strip()
+    unit_id = request.args.get("unit_id", "").strip()
     dimension_ids = request.args.get("dimension_ids", "").strip()
     key_works = request.args.get("key_works", "").strip()
     page = request.args.get("page", 1, type=int)
@@ -148,11 +148,21 @@ def filter_options():
     )
     assessed_units = [{"id": u[0], "name": u[1]} for u in assessed]
 
+    # 晾晒周期选项
+    periods = (
+        db.session.query(Task.review_period)
+        .filter(Task.id.in_(task_ids), Task.review_period.isnot(None), Task.review_period != "")
+        .distinct().all()
+    )
+    PERIOD_LABELS = {"monthly": "月度", "quarterly": "季度", "semiannual": "半年度", "annual": "年度"}
+    review_periods = [{"id": p[0], "name": PERIOD_LABELS.get(p[0], p[0])} for p in periods if p[0]]
+
     return jsonify({"data": {
         "dimensions": dimensions,
         "key_works": key_works,
         "assessor_units": assessor_units,
         "assessed_units": assessed_units,
+        "review_periods": review_periods,
     }})
 
 

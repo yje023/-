@@ -9,6 +9,7 @@
         <el-option label="重点工作" value="key_work" />
         <el-option label="评价部门" value="assessor" />
         <el-option label="被考核单位" value="unit" />
+        <el-option label="晾晒周期" value="period" />
       </el-select>
       <el-select v-model="filterStatus" placeholder="筛选状态" clearable @change="onFilterChange" style="width:140px">
         <el-option label="待填报" value="pending" />
@@ -225,6 +226,7 @@ function onChipCategoryChange() {
   else if (chipCategory.value === 'key_work') chipOptions.value = (opts.key_works || []).map(k => ({ id: k, name: k }))
   else if (chipCategory.value === 'assessor') chipOptions.value = opts.assessor_units || []
   else if (chipCategory.value === 'unit') chipOptions.value = opts.assessed_units || []
+  else if (chipCategory.value === 'period') chipOptions.value = opts.review_periods || []
   else chipOptions.value = []
 }
 
@@ -264,7 +266,7 @@ async function loadAllUnits() { try { const r = await getUnits(); allUnits.value
 
 async function loadTasks() {
   const params = { page: currentPage.value, page_size: pageSize.value }
-  if (searchKey.value) { params.search = searchKey.value }
+  if (searchKey.value) { params.search = searchKey.value; params.search_type = 'all' }
   if (filterPlanId.value) params.plan_id = filterPlanId.value
   if (filterStatus.value) params.status = filterStatus.value
   if (chipSelected.value.length) {
@@ -272,6 +274,7 @@ async function loadTasks() {
     else if (chipCategory.value === 'key_work') params.key_works = chipSelected.value.map(c => c.name || c).join(',')
     else if (chipCategory.value === 'assessor') params.assessor_unit_id = chipSelected.value.map(c => c.id).join(',')
     else if (chipCategory.value === 'unit') params.unit_id = chipSelected.value.map(c => c.id).join(',')
+    else if (chipCategory.value === 'period') params.search = chipSelected.value.map(c => c.id).join(','); params.search_type = 'period'
   }
   try {
     const r = await api.getTasks(params)
