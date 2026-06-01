@@ -881,70 +881,128 @@ def download_template():
                      as_attachment=True, download_name=fname)
 
 
-@task_bp.route("/api/tasks/export", methods=["GET"])
-@jwt_required()
-def export_tasks():
-    user = _get_user(int(get_jwt_identity()))
-    plan_id = request.args.get("plan_id", type=int)
-    group_id = request.args.get("group_id", type=int)
-    export_all = request.args.get("all", "")
-
-    q = Task.query
-    if plan_id:
-        q = q.filter(Task.plan_id == plan_id)
-
-    # 发布单位(系统管理员)看全部，不受 all 参数限制
-    is_publisher = user and user.role and user.role.is_system
-    if not export_all and user and not is_publisher:
-        if user.current_identity == "assessed":
-            q = q.filter(Task.unit_id == user.unit_id)
-        elif user.current_identity == "assessor":
-            q = q.filter(Task.assessor_unit_id == user.unit_id)
-
-    if group_id:
-        from models import AssessedGroup
-        group = AssessedGroup.query.get(group_id)
-        if group:
-            unit_ids = [u.id for u in group.units]
-            q = q.filter(Task.unit_id.in_(unit_ids))
-
-    # 先按考核维度再按 ID 排序，同维度任务聚在一起
-    tasks = q.join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
-             .order_by(AssessmentDimension.name, Task.id).all()
-
-    # 标题：{考核年度}年度考核任务书
-    year = ""
-    if plan_id:
-        plan = Plan.query.get(plan_id)
-        if plan:
-            year = str(plan.year)
-    title = f"{year}年度考核任务书" if year else "考核任务书"
-
-    headers = ["序号", "被考核单位", "维度", "评价部门", "重点工作", "主要任务", "评分说明", "晾晒周期", "完成情况", "得分", "评语"]
-
+def _build_export_task_rows(tasks, include_unit=True):
+    """将任务列表转为导出用的行数据"""
+    headers = ["序号"]
+    if include_unit:
+        headers.append("被考核单位")
+    headers += ["维度", "评价部门", "重点工作", "主要任务", "评分说明", "晾晒周期", "完成情况", "得分", "评语"]
     rows = []
     seq = 1
     for t in tasks:
         sub = t.submissions[-1].content if t.submissions else ""
         score_obj = t.scores[-1] if t.scores else None
-        rows.append([
-            seq,
-            t.unit.name if t.unit else "",
+        row = [seq]
+        if include_unit:
+            row.append(t.unit.name if t.unit else "")
+        row += [
             t.assessment_dimension.name if t.assessment_dimension else "",
             t.assessor_unit.name if t.assessor_unit else "",
-            t.key_work,
-            t.main_task,
-            t.scoring_note or "",
-            t.review_period,
-            sub,
-            score_obj.score if score_obj else "",
-            score_obj.comment if score_obj else "",
-        ])
+            t.key_work, t.main_task, t.scoring_note or "", t.review_period,
+            sub, score_obj.score if score_obj else "", score_obj.comment if score_obj else "",
+        ]
+        rows.append(row)
         seq += 1
+    return headers, rows
 
-    output = export_gov_xlsx(title, headers, rows, merge_col=2)  # 维度列(第3列,0-based=2)合并
+
+def _get_plan_year(plan_id):
+    if plan_id:
+        plan = Plan.query.get(plan_id)
+        return str(plan.year) if plan else ""
+    return ""
+
+
+# ==================== 导出1：导出当前搜索结果 ====================
+
+@task_bp.route("/api/tasks/export", methods=["GET"])
+@jwt_required()
+def export_tasks():
+    """导出当前搜索结果（接受 list_tasks 全部筛选参数）"""
+    user = _get_user(int(get_jwt_identity()))
+    plan_id = request.args.get("plan_id", type=int)
+
+    # 复用 list_tasks 的查询逻辑
+    q = Task.query
+    if plan_id:
+        q = q.filter(Task.plan_id == plan_id)
+
+    status = request.args.get("status", "").strip()
+    search = request.args.get("search", "").strip()
+    search_type = request.args.get("search_type", "all").strip()
+    assessor_unit_id = request.args.get("assessor_unit_id", "").strip()
+    unit_id = request.args.get("unit_id", "").strip()
+    dimension_ids = request.args.get("dimension_ids", "").strip()
+    key_works = request.args.get("key_works", "").strip()
+
+    if status:
+        q = q.filter(Task.status == status)
+    if assessor_unit_id:
+        ids = [int(x) for x in assessor_unit_id.split(",") if x.strip().isdigit()]
+        if ids: q = q.filter(Task.assessor_unit_id.in_(ids))
+    if unit_id:
+        ids = [int(x) for x in unit_id.split(",") if x.strip().isdigit()]
+        if ids: q = q.filter(Task.unit_id.in_(ids))
+    if dimension_ids:
+        ids = [int(x) for x in dimension_ids.split(",") if x.strip().isdigit()]
+        if ids: q = q.filter(Task.assessment_dimension_id.in_(ids))
+    if key_works:
+        kws = [x.strip() for x in key_works.split(",") if x.strip()]
+        if kws: q = q.filter(db.or_(*[Task.key_work.contains(kw) for kw in kws]))
+    if search:
+        q = q.filter(db.or_(Task.key_work.contains(search), Task.main_task.contains(search), Task.scoring_note.contains(search)))
+
+    # 权限过滤
+    is_publisher = user and user.role and user.role.is_system
+    if not is_publisher:
+        if user and user.current_identity == "assessed":
+            q = q.filter(Task.unit_id == user.unit_id)
+        elif user and user.current_identity == "assessor":
+            q = q.filter(Task.assessor_unit_id == user.unit_id)
+
+    tasks = q.join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
+             .order_by(AssessmentDimension.name, Task.id).all()
+
+    year = _get_plan_year(plan_id)
+    title = f"{year}年度考核任务书" if year else "考核任务书"
+    headers, rows = _build_export_task_rows(tasks, include_unit=True)
+    output = export_gov_xlsx(title, headers, rows, merge_col=2 if True else 1)
     return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                     as_attachment=True, download_name="考核任务书.xlsx")
+                     as_attachment=True, download_name="考核任务书_搜索结果.xlsx")
+
+
+# ==================== 导出2：单表全部数据 ====================
+
+@task_bp.route("/api/tasks/export-all-single", methods=["GET"])
+@jwt_required()
+def export_all_single():
+    """全部数据导出为单个 xlsx"""
+    user = _get_user(int(get_jwt_identity()))
+    plan_id = request.args.get("plan_id", type=int)
+
+    q = Task.query
+    if plan_id:
+        q = q.filter(Task.plan_id == plan_id)
+
+    is_publisher = user and user.role and user.role.is_system
+    if not is_publisher:
+        if user and user.current_identity == "assessed":
+            q = q.filter(Task.unit_id == user.unit_id)
+        elif user and user.current_identity == "assessor":
+            q = q.filter(Task.assessor_unit_id == user.unit_id)
+
+    tasks = q.join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
+             .order_by(AssessmentDimension.name, Task.id).all()
+
+    year = _get_plan_year(plan_id)
+    title = f"{year}年度考核任务书（全量）" if year else "考核任务书（全量）"
+    headers, rows = _build_export_task_rows(tasks, include_unit=True)
+    output = export_gov_xlsx(title, headers, rows, merge_col=2)
+    return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     as_attachment=True, download_name="考核任务书_全量单表.xlsx")
+
+
+# ==================== 导出3：按被考核单位分包 ZIP ====================
 
 
 # ==================== 全量导出（按单位分包 ZIP） ====================
@@ -1019,4 +1077,68 @@ def export_all_tasks():
 
     zip_buf.seek(0)
     return send_file(zip_buf, mimetype="application/zip",
-                     as_attachment=True, download_name="考核任务书_全量导出.zip")
+                     as_attachment=True, download_name="考核任务书_按被考核单位.zip")
+
+
+# ==================== 导出4：按主考单位分包 ZIP ====================
+
+@task_bp.route("/api/tasks/export-by-assessor", methods=["GET"])
+@jwt_required()
+def export_by_assessor():
+    """全量导出，按主考单位分组，每个单位一个 xlsx，打包 ZIP"""
+    user = _get_user(int(get_jwt_identity()))
+    plan_id = request.args.get("plan_id", type=int)
+
+    q = Task.query
+    if plan_id:
+        q = q.filter(Task.plan_id == plan_id)
+
+    is_publisher = user and user.role and user.role.is_system
+    if not is_publisher:
+        if user and user.current_identity == "assessed":
+            q = q.filter(Task.unit_id == user.unit_id)
+        elif user and user.current_identity == "assessor":
+            q = q.filter(Task.assessor_unit_id == user.unit_id)
+
+    tasks = q.join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
+             .order_by(Task.assessor_unit_id, AssessmentDimension.name, Task.id).all()
+
+    # 按主考单位分组
+    assessor_tasks = {}
+    for t in tasks:
+        key = t.assessor_unit_id
+        if key not in assessor_tasks:
+            assessor_tasks[key] = {"name": t.assessor_unit.name if t.assessor_unit else "未分配", "tasks": []}
+        assessor_tasks[key]["tasks"].append(t)
+
+    year = _get_plan_year(plan_id)
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for assessor_id, data in assessor_tasks.items():
+            unit_name = data["name"]
+            task_list = data["tasks"]
+
+            title = f"{year}年度{unit_name}主考任务清单" if year else f"{unit_name}主考任务书"
+            headers = ["序号", "被考核单位", "维度", "重点工作", "主要任务", "评分说明", "晾晒周期", "完成情况", "得分", "评语"]
+            rows = []
+            seq = 1
+            for t in task_list:
+                sub = t.submissions[-1].content if t.submissions else ""
+                score_obj = t.scores[-1] if t.scores else None
+                rows.append([
+                    seq,
+                    t.unit.name if t.unit else "",
+                    t.assessment_dimension.name if t.assessment_dimension else "",
+                    t.key_work, t.main_task, t.scoring_note or "", t.review_period,
+                    sub, score_obj.score if score_obj else "", score_obj.comment if score_obj else "",
+                ])
+                seq += 1
+
+            xlsx_buf = export_gov_xlsx(title, headers, rows, merge_col=1)
+            safe_name = unit_name.replace("/", "_").replace("\\", "_")
+            zf.writestr(f"{safe_name}主考.xlsx", xlsx_buf.getvalue())
+
+    zip_buf.seek(0)
+    return send_file(zip_buf, mimetype="application/zip",
+                     as_attachment=True, download_name="考核任务书_按主考单位.zip")

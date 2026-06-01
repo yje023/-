@@ -19,4 +19,6 @@ export function importTasks(planId, file) {
 }
 export function downloadTaskTemplate() { return http.get('/tasks/template', { responseType: 'blob' }) }
 export function exportTasks(params) { return http.get('/tasks/export', { params, responseType: 'blob' }) }
-export function exportAllTasks(params) { return http.get('/tasks/export-all', { params, responseType: 'blob' }) }
+export function exportAllSingle(params) { return http.get('/tasks/export-all-single', { params, responseType: 'blob' }) }
+export function exportAllByUnit(params) { return http.get('/tasks/export-all', { params, responseType: 'blob' }) }
+export function exportByAssessor(params) { return http.get('/tasks/export-by-assessor', { params, responseType: 'blob' }) }

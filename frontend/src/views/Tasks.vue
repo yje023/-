@@ -45,8 +45,19 @@
           <el-button :disabled="!filterPlanId">批量导入xlsx</el-button>
         </el-upload>
       </template>
-      <el-button @click="handleExport">导出xlsx</el-button>
-      <el-button type="primary" @click="handleExportAll">全量导出ZIP</el-button>
+      <el-dropdown @command="handleExportMenu" style="margin-left:4px">
+        <el-button type="primary">
+          导出 <el-icon><ArrowDown /></el-icon>
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="search">📥 导出当前搜索结果</el-dropdown-item>
+            <el-dropdown-item command="single">📄 全量单表导出</el-dropdown-item>
+            <el-dropdown-item command="by-unit">📦 按被考核单位分包ZIP</el-dropdown-item>
+            <el-dropdown-item command="by-assessor">📦 按主考单位分包ZIP</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
     </div>
 
     <el-table :data="tasks" border stripe @selection-change="onSelectionChange" empty-description="暂无任务数据">
@@ -460,23 +471,37 @@ async function downloadTpl() {
   const url = URL.createObjectURL(r.data)
   const a = document.createElement('a'); a.href = url; a.download = '考核任务导入模板.xlsx'; a.click(); URL.revokeObjectURL(url)
 }
-async function handleExport() {
+function buildExportParams() {
   const params = {}
   if (filterPlanId.value) params.plan_id = filterPlanId.value
-  try {
-    const r = await api.exportTasks(params)
-    const url = URL.createObjectURL(r.data)
-    const a = document.createElement('a'); a.href = url; a.download = '考核任务书.xlsx'; a.click(); URL.revokeObjectURL(url)
-  } catch {}
+  if (searchKey.value) { params.search = searchKey.value; params.search_type = 'all' }
+  if (filterStatus.value) params.status = filterStatus.value
+  if (chipSelected.value.length) {
+    if (chipCategory.value === 'dimension') params.dimension_ids = chipSelected.value.map(c => c.id).join(',')
+    else if (chipCategory.value === 'key_work') params.key_works = chipSelected.value.map(c => c.name || c).join(',')
+    else if (chipCategory.value === 'assessor') params.assessor_unit_id = chipSelected.value.map(c => c.id).join(',')
+    else if (chipCategory.value === 'unit') params.unit_id = chipSelected.value.map(c => c.id).join(',')
+    else if (chipCategory.value === 'period') { params.search = chipSelected.value.map(c => c.id).join(','); params.search_type = 'period' }
+  }
+  return params
 }
-async function handleExportAll() {
-  const params = {}
-  if (filterPlanId.value) params.plan_id = filterPlanId.value
-  try {
-    const r = await api.exportAllTasks(params)
-    const url = URL.createObjectURL(r.data)
-    const a = document.createElement('a'); a.href = url; a.download = '考核任务书_全量导出.zip'; a.click(); URL.revokeObjectURL(url)
-  } catch {}
+
+function downloadBlob(r, filename) {
+  const url = URL.createObjectURL(r.data)
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url)
+}
+
+async function handleExportMenu(cmd) {
+  const params = buildExportParams()
+  const map = {
+    'search': ['exportTasks', '考核任务书_搜索结果.xlsx'],
+    'single': ['exportAllSingle', '考核任务书_全量单表.xlsx'],
+    'by-unit': ['exportAllByUnit', '考核任务书_按被考核单位.zip'],
+    'by-assessor': ['exportByAssessor', '考核任务书_按主考单位.zip'],
+  }
+  const [fn, filename] = map[cmd] || []
+  if (!fn) return
+  try { const r = await api[fn](params); downloadBlob(r, filename) } catch {}
 }
 
 onMounted(async () => { await loadPlansData(); await loadFilterOpts(); loadAllUnits(); loadTasks() })
