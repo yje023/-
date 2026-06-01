@@ -41,9 +41,19 @@ const router = createRouter({
 })
 
 router.beforeEach((to, from, next) => {
-  // 桌面版：跳过登录，直接进入系统
+  const token = localStorage.getItem('token')
+  // 已登录用户访问登录页 → 跳转首页
   if (to.path === '/login') {
-    next('/dashboard')
+    if (token) {
+      next('/dashboard')
+    } else {
+      next()
+    }
+  } else if (to.meta.noAuth) {
+    next()
+  } else if (!token) {
+    // 未登录访问需要认证的页面 → 跳转登录页
+    next('/login')
   } else {
     next()
   }

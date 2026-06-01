@@ -1,5 +1,6 @@
 from models import db, Plan, Task, Unit, AssessmentDimension, TaskSubmission, TaskScore, Cadre, AssessmentResult, AssessedGroup
 from sqlalchemy import func
+from services.task_query import build_task_query
 
 
 def get_dashboard_overview(plan_id=None, user=None):
@@ -20,21 +21,6 @@ def get_dashboard_overview(plan_id=None, user=None):
     }
 
 
-def _task_query(plan_id, user):
-    """构建带角色过滤的任务查询"""
-    q = Task.query
-    if plan_id:
-        q = q.filter(Task.plan_id == plan_id)
-
-    is_publisher = user and user.role and user.role.is_system
-    if not is_publisher and user:
-        if user.current_identity == "assessed":
-            q = q.filter(Task.unit_id == user.unit_id)
-        elif user.current_identity == "assessor":
-            q = q.filter(Task.assessor_unit_id == user.unit_id)
-    return q
-
-
 def _get_stats(plan_id, user):
     """统计卡片：方案数、单位数、任务数、完成率"""
     plan_q = Plan.query
@@ -42,7 +28,7 @@ def _get_stats(plan_id, user):
         plan_q = plan_q.filter(Plan.id == plan_id)
     total_plans = plan_q.count()
 
-    q = _task_query(plan_id, user)
+    q = build_task_query(plan_id=plan_id, user=user)
     total_tasks = q.count()
     reviewed_tasks = q.filter(Task.status == "reviewed").count()
 
@@ -62,7 +48,7 @@ def _get_stats(plan_id, user):
 
 def _get_dimension_stats(plan_id, user):
     """各考核维度任务统计（用于柱状图）"""
-    q = _task_query(plan_id, user)
+    q = build_task_query(plan_id=plan_id, user=user)
     rows = (
         q.with_entities(
             AssessmentDimension.name,
@@ -86,7 +72,7 @@ def _get_dimension_stats(plan_id, user):
 
 def _get_unit_completion(plan_id, user):
     """各单位完成率排名（TOP 15，用于横向柱状图）"""
-    q = _task_query(plan_id, user)
+    q = build_task_query(plan_id=plan_id, user=user)
     rows = (
         q.with_entities(
             Unit.name,
@@ -109,7 +95,7 @@ def _get_unit_completion(plan_id, user):
 
 def _get_status_distribution(plan_id, user):
     """任务状态分布（饼图）"""
-    q = _task_query(plan_id, user)
+    q = build_task_query(plan_id=plan_id, user=user)
     rows = q.with_entities(Task.status, db.func.count(Task.id)).group_by(Task.status).all()
     dist = {"pending": 0, "submitted": 0, "reviewed": 0}
     for status, count in rows:
@@ -119,7 +105,7 @@ def _get_status_distribution(plan_id, user):
 
 def _get_period_distribution(plan_id, user):
     """晾晒周期分布（饼图）"""
-    q = _task_query(plan_id, user)
+    q = build_task_query(plan_id=plan_id, user=user)
     rows = q.with_entities(Task.review_period, db.func.count(Task.id)).group_by(Task.review_period).all()
     dist = {}
     for period, count in rows:
@@ -269,7 +255,7 @@ def get_cadre_stats():
 
 def get_task_progress(plan_id=None, user=None):
     """重点任务管理 — 仪表盘数据"""
-    q = _task_query(plan_id, user)
+    q = build_task_query(plan_id=plan_id, user=user)
     total = q.count()
     pending = q.filter(Task.status == "pending").count()
     submitted = q.filter(Task.status == "submitted").count()
@@ -306,7 +292,7 @@ def get_task_progress(plan_id=None, user=None):
 
 def get_task_flow(plan_id=None, user=None):
     """考核系统进度监控 — 桑基图数据"""
-    q = _task_query(plan_id, user)
+    q = build_task_query(plan_id=plan_id, user=user)
 
     # 按考核维度统计任务数，作为流转节点
     dim_rows = (
@@ -365,7 +351,7 @@ def get_assessment_results(plan_year=None, position_type=None):
 
 def get_task_decomposition(plan_id=None, user=None):
     """任务解构管理 — 层级环形图数据"""
-    q = _task_query(plan_id, user)
+    q = build_task_query(plan_id=plan_id, user=user)
 
     # 按考核维度和状态统计
     rows = (

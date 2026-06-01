@@ -1,7 +1,7 @@
 <template>
   <div class="content-card">
     <div class="search-bar">
-      <el-input v-model="search" placeholder="搜索用户名" clearable @change="onSearch" style="width:200px" />
+      <el-input v-model="search" placeholder="搜索用户名" clearable @change="onSearch" @keyup.enter="onSearch" style="width:200px" />
       <el-select v-model="filterUnitId" placeholder="筛选单位" clearable @change="onFilterChange" style="width:200px">
         <el-option v-for="u in units" :key="u.id" :label="u.name" :value="u.id" />
       </el-select>
@@ -12,7 +12,7 @@
       <el-button v-if="checkedIds.length" type="danger" @click="handleBatchDelete">批量删除({{ checkedIds.length }})</el-button>
     </div>
 
-    <el-table :data="users" border stripe @selection-change="onSelectionChange">
+    <el-table :data="users" border stripe @selection-change="onSelectionChange" v-loading="loading">
       <template #empty><el-empty description="暂无用户数据" :image-size="80" /></template>
       <el-table-column type="selection" width="50" />
       <el-table-column prop="username" label="用户名" />
@@ -88,6 +88,7 @@ import { getUsers, createUser, updateUser, deleteUser, batchDeleteUsers } from '
 import { getUnits } from '../api/unit'
 import { getRoles } from '../api/role'
 
+const loading = ref(false)
 const search = ref('')
 const filterUnitId = ref(null)
 const filterRoleId = ref(null)
@@ -104,6 +105,7 @@ function onFilterChange() { userPage.value = 1; loadUsers() }
 function onSelectionChange(sel) { checkedIds.value = sel.map(r => r.id) }
 
 async function loadUsers() {
+  loading.value = true
   const params = { page: userPage.value, page_size: userPageSize.value }
   if (search.value) params.search = search.value
   if (filterUnitId.value) params.unit_id = filterUnitId.value
@@ -112,7 +114,7 @@ async function loadUsers() {
     const res = await getUsers(params)
     if (res.data?.items) { users.value = res.data.items; userTotal.value = res.data.total }
     else { users.value = res.data || []; userTotal.value = users.value.length }
-  } catch {}
+  } catch {} finally { loading.value = false }
 }
 
 const dialogVisible = ref(false)

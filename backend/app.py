@@ -1,10 +1,15 @@
 import os
 import sys
-from flask import Flask, send_from_directory, request
+import logging
+from flask import Flask, send_from_directory, request, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token
 from config import Config
 from models import db
+
+# 日志配置
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder=None)
 app.config.from_object(Config)
@@ -38,6 +43,43 @@ def desktop_auto_auth():
             token = create_access_token(identity=user_id)
             request.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
 
+
+# ========== 错误处理中间件 ==========
+
+@app.errorhandler(400)
+def bad_request(error):
+    return jsonify({"msg": str(error.description) if hasattr(error, 'description') else "请求参数错误", "code": 400}), 400
+
+@app.errorhandler(401)
+def unauthorized(error):
+    return jsonify({"msg": "未授权，请重新登录", "code": 401}), 401
+
+@app.errorhandler(403)
+def forbidden(error):
+    return jsonify({"msg": "权限不足", "code": 403}), 403
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"msg": "资源不存在", "code": 404}), 404
+
+@app.errorhandler(500)
+def server_error(error):
+    logger.error(f"500 error: {error}", exc_info=True)
+    return jsonify({"msg": "服务器内部错误", "code": 500}), 500
+
+# ========== 请求日志 + 安全响应头 ==========
+
+@app.before_request
+def log_request():
+    if request.path.startswith("/api/"):
+        logger.info(f"{request.method} {request.path}")
+
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    return response
 
 from routes.auth import auth_bp
 from routes.org import org_bp
@@ -284,12 +326,46 @@ def _seed_default_admin():
     print("已创建默认管理员账号: admin / admin123")
 
 
+def _create_indexes():
+    """为常用查询列创建索引"""
+    import sqlite3
+    conn = sqlite3.connect(app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", ""))
+    try:
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_task_plan_id ON task(plan_id)",
+            "CREATE INDEX IF NOT EXISTS idx_task_unit_id ON task(unit_id)",
+            "CREATE INDEX IF NOT EXISTS idx_task_assessor_unit_id ON task(assessor_unit_id)",
+            "CREATE INDEX IF NOT EXISTS idx_task_assessment_dimension_id ON task(assessment_dimension_id)",
+            "CREATE INDEX IF NOT EXISTS idx_task_status ON task(status)",
+            "CREATE INDEX IF NOT EXISTS idx_task_review_period ON task(review_period)",
+            "CREATE INDEX IF NOT EXISTS idx_task_plan_status ON task(plan_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_task_plan_unit ON task(plan_id, unit_id)",
+            "CREATE INDEX IF NOT EXISTS idx_user_unit_id ON user(unit_id)",
+            "CREATE INDEX IF NOT EXISTS idx_user_role_id ON user(role_id)",
+            "CREATE INDEX IF NOT EXISTS idx_quality_issue_plan_id ON quality_issue(plan_id)",
+            "CREATE INDEX IF NOT EXISTS idx_quality_issue_task_id ON quality_issue(task_id)",
+            "CREATE INDEX IF NOT EXISTS idx_quality_issue_status ON quality_issue(status)",
+            "CREATE INDEX IF NOT EXISTS idx_cadre_unit_id ON cadre(unit_id)",
+            "CREATE INDEX IF NOT EXISTS idx_task_submission_task_id ON task_submission(task_id)",
+            "CREATE INDEX IF NOT EXISTS idx_task_score_task_id ON task_score(task_id)",
+            "CREATE INDEX IF NOT EXISTS idx_assessment_result_cadre_id ON assessment_result(cadre_id)",
+            "CREATE INDEX IF NOT EXISTS idx_assessment_result_plan_year ON assessment_result(plan_year)",
+        ]
+        for sql in indexes:
+            conn.execute(sql)
+        conn.commit()
+        print("DB migration: indexes created/verified")
+    finally:
+        conn.close()
+
+
 def init_db():
     """初始化数据库"""
     with app.app_context():
         db.create_all()
         _migrate_add_column("evaluation_dimension", "is_bonus_deduction", "BOOLEAN", "0")
         _migrate_nullable_columns()
+        _create_indexes()
         _backfill_bonus_deduction()
         _clean_task_orphans()
         _seed_default_admin()

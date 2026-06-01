@@ -1,14 +1,15 @@
 import io, re, zipfile
 from flask import Blueprint, request, jsonify, send_file
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from models import db, Task, TaskSubmission, TaskScore, Plan, AssessmentDimension, Unit
+from sqlalchemy.orm import joinedload
+from models import db, Task, TaskSubmission, TaskScore, Plan, AssessmentDimension, Unit, User
 from utils.xlsx_handler import export_xlsx, export_gov_xlsx, read_workbook, fuzzy_match_headers, HEADER_KEYWORDS
+from services.task_query import build_task_query
 
 task_bp = Blueprint("task", __name__)
 
 
 def _get_user(user_id):
-    from models import User
     return User.query.get(user_id)
 
 
@@ -16,85 +17,31 @@ def _get_user(user_id):
 @jwt_required()
 def list_tasks():
     user = _get_user(int(get_jwt_identity()))
-    plan_id = request.args.get("plan_id", type=int)
-    status = request.args.get("status", "").strip()
-    search = request.args.get("search", "").strip()
-    search_type = request.args.get("search_type", "all").strip()
-    assessor_unit_id = request.args.get("assessor_unit_id", "").strip()
-    unit_id = request.args.get("unit_id", "").strip()
-    dimension_ids = request.args.get("dimension_ids", "").strip()
-    key_works = request.args.get("key_works", "").strip()
     page = request.args.get("page", 1, type=int)
     page_size = request.args.get("page_size", 20, type=int)
     page_size = min(page_size, 200)
 
-    q = Task.query
-    if plan_id:
-        q = q.filter(Task.plan_id == plan_id)
-    if status:
-        q = q.filter(Task.status == status)
-    if assessor_unit_id:
-        ids = [int(x) for x in str(assessor_unit_id).split(",") if x.strip().isdigit()]
-        if ids:
-            q = q.filter(Task.assessor_unit_id.in_(ids))
-    if unit_id:
-        ids = [int(x) for x in str(unit_id).split(",") if x.strip().isdigit()]
-        if ids:
-            q = q.filter(Task.unit_id.in_(ids))
-    if dimension_ids:
-        ids = [int(x) for x in dimension_ids.split(",") if x.strip().isdigit()]
-        if ids:
-            q = q.filter(Task.assessment_dimension_id.in_(ids))
-    if key_works:
-        kws = [x.strip() for x in key_works.split(",") if x.strip()]
-        if kws:
-            conditions = [Task.key_work.contains(kw) for kw in kws]
-            q = q.filter(db.or_(*conditions))
-    if search:
-        if search_type == "key_work":
-            q = q.filter(Task.key_work.contains(search))
-        elif search_type == "main_task":
-            q = q.filter(Task.main_task.contains(search))
-        elif search_type == "dimension":
-            q = q.join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
-                 .filter(AssessmentDimension.name.contains(search))
-        elif search_type == "assessor":
-            q = q.join(Unit, Task.assessor_unit_id == Unit.id)\
-                 .filter(Unit.name.contains(search))
-        elif search_type == "unit":
-            q = q.join(Unit, Task.unit_id == Unit.id)\
-                 .filter(Unit.name.contains(search))
-        elif search_type == "period":
-            q = q.filter(Task.review_period.contains(search))
-        else:  # all — 搜索全部字段（子查询避免 join 干扰）
-            q = q.filter(
-                db.or_(
-                    Task.key_work.contains(search),
-                    Task.main_task.contains(search),
-                    Task.scoring_note.contains(search),
-                    Task.review_period.contains(search),
-                    Task.assessment_dimension_id.in_(
-                        db.session.query(AssessmentDimension.id).filter(AssessmentDimension.name.contains(search))
-                    ),
-                    Task.unit_id.in_(
-                        db.session.query(Unit.id).filter(Unit.name.contains(search))
-                    ),
-                    Task.assessor_unit_id.in_(
-                        db.session.query(Unit.id).filter(Unit.name.contains(search))
-                    ),
-                )
-            )
-
-    # 发布单位(系统管理员)看全部；被考核单位只看自己的；主考单位看评价部门是自己的
-    is_publisher = user and user.role and user.role.is_system
-    if not is_publisher:
-        if user and user.current_identity == "assessed":
-            q = q.filter(Task.unit_id == user.unit_id)
-        elif user and user.current_identity == "assessor":
-            q = q.filter(Task.assessor_unit_id == user.unit_id)
+    q = build_task_query(
+        plan_id=request.args.get("plan_id", type=int),
+        status=request.args.get("status", "").strip(),
+        search=request.args.get("search", "").strip(),
+        search_type=request.args.get("search_type", "all").strip(),
+        assessor_unit_id=request.args.get("assessor_unit_id", "").strip(),
+        unit_id=request.args.get("unit_id", "").strip(),
+        dimension_ids=request.args.get("dimension_ids", "").strip(),
+        key_works=request.args.get("key_works", "").strip(),
+        period=request.args.get("period", "").strip(),
+        user=user,
+    )
 
     total = q.count()
-    tasks = q.order_by(Task.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    tasks = q.options(
+        joinedload(Task.assessment_dimension),
+        joinedload(Task.unit),
+        joinedload(Task.assessor_unit),
+        joinedload(Task.submissions),
+        joinedload(Task.scores),
+    ).order_by(Task.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     data = [_task_to_dict(t) for t in tasks]
     return jsonify({"data": {"items": data, "total": total, "page": page, "page_size": page_size}})
 
@@ -252,6 +199,22 @@ def delete_task(task_id):
     return jsonify({"msg": "删除成功"})
 
 
+@task_bp.route("/api/tasks/<int:task_id>", methods=["GET"])
+@jwt_required()
+def get_task(task_id):
+    """获取单条任务详情（含预加载关联数据）"""
+    task = Task.query.options(
+        joinedload(Task.assessment_dimension),
+        joinedload(Task.unit),
+        joinedload(Task.assessor_unit),
+        joinedload(Task.submissions),
+        joinedload(Task.scores),
+    ).get(task_id)
+    if not task:
+        return jsonify({"msg": "任务不存在"}), 404
+    return jsonify({"data": _task_to_dict(task)})
+
+
 @task_bp.route("/api/tasks/batch-all", methods=["DELETE"])
 @jwt_required()
 def batch_delete_all_tasks():
@@ -266,6 +229,19 @@ def batch_delete_all_tasks():
     q.delete(synchronize_session=False)
     db.session.commit()
     return jsonify({"msg": f"成功删除 {count} 个任务", "data": {"deleted": count}})
+
+
+@task_bp.route("/api/tasks/batch-delete", methods=["POST"])
+@jwt_required()
+def batch_delete_tasks():
+    """批量删除指定ID的任务"""
+    data = request.get_json()
+    ids = data.get("ids", [])
+    if not ids:
+        return jsonify({"msg": "请选择要删除的任务"}), 400
+    Task.query.filter(Task.id.in_(ids)).delete(synchronize_session=False)
+    db.session.commit()
+    return jsonify({"msg": f"已删除 {len(ids)} 个任务"})
 
 
 @task_bp.route("/api/tasks/<int:task_id>/review", methods=["PUT"])
@@ -932,58 +908,27 @@ def export_tasks():
     user = _get_user(int(get_jwt_identity()))
     plan_id = request.args.get("plan_id", type=int)
 
-    # 复用 list_tasks 的查询逻辑
-    q = Task.query
-    if plan_id:
-        q = q.filter(Task.plan_id == plan_id)
+    q = build_task_query(
+        plan_id=plan_id,
+        status=request.args.get("status", "").strip(),
+        search=request.args.get("search", "").strip(),
+        search_type=request.args.get("search_type", "all").strip(),
+        assessor_unit_id=request.args.get("assessor_unit_id", "").strip(),
+        unit_id=request.args.get("unit_id", "").strip(),
+        dimension_ids=request.args.get("dimension_ids", "").strip(),
+        key_works=request.args.get("key_works", "").strip(),
+        period=request.args.get("period", "").strip(),
+        user=user,
+    )
 
-    status = request.args.get("status", "").strip()
-    search = request.args.get("search", "").strip()
-    search_type = request.args.get("search_type", "all").strip()
-    assessor_unit_id = request.args.get("assessor_unit_id", "").strip()
-    unit_id = request.args.get("unit_id", "").strip()
-    dimension_ids = request.args.get("dimension_ids", "").strip()
-    key_works = request.args.get("key_works", "").strip()
-
-    if status:
-        q = q.filter(Task.status == status)
-    if assessor_unit_id:
-        ids = [int(x) for x in assessor_unit_id.split(",") if x.strip().isdigit()]
-        if ids: q = q.filter(Task.assessor_unit_id.in_(ids))
-    if unit_id:
-        ids = [int(x) for x in unit_id.split(",") if x.strip().isdigit()]
-        if ids: q = q.filter(Task.unit_id.in_(ids))
-    if dimension_ids:
-        ids = [int(x) for x in dimension_ids.split(",") if x.strip().isdigit()]
-        if ids: q = q.filter(Task.assessment_dimension_id.in_(ids))
-    if key_works:
-        kws = [x.strip() for x in key_works.split(",") if x.strip()]
-        if kws: q = q.filter(db.or_(*[Task.key_work.contains(kw) for kw in kws]))
-    if search:
-        q = q.filter(db.or_(
-            Task.key_work.contains(search), Task.main_task.contains(search),
-            Task.scoring_note.contains(search), Task.review_period.contains(search),
-            Task.assessment_dimension_id.in_(
-                db.session.query(AssessmentDimension.id).filter(AssessmentDimension.name.contains(search))
-            ),
-            Task.unit_id.in_(
-                db.session.query(Unit.id).filter(Unit.name.contains(search))
-            ),
-            Task.assessor_unit_id.in_(
-                db.session.query(Unit.id).filter(Unit.name.contains(search))
-            ),
-        ))
-
-    # 权限过滤
-    is_publisher = user and user.role and user.role.is_system
-    if not is_publisher:
-        if user and user.current_identity == "assessed":
-            q = q.filter(Task.unit_id == user.unit_id)
-        elif user and user.current_identity == "assessor":
-            q = q.filter(Task.assessor_unit_id == user.unit_id)
-
-    tasks = q.join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
-             .order_by(AssessmentDimension.name, Task.id).all()
+    tasks = q.options(
+        joinedload(Task.assessment_dimension),
+        joinedload(Task.unit),
+        joinedload(Task.assessor_unit),
+        joinedload(Task.submissions),
+        joinedload(Task.scores),
+    ).join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
+     .order_by(AssessmentDimension.name, Task.id).all()
 
     year = _get_plan_year(plan_id)
     title = f"{year}年度考核任务书" if year else "考核任务书"
@@ -1002,19 +947,16 @@ def export_all_single():
     user = _get_user(int(get_jwt_identity()))
     plan_id = request.args.get("plan_id", type=int)
 
-    q = Task.query
-    if plan_id:
-        q = q.filter(Task.plan_id == plan_id)
+    q = build_task_query(plan_id=plan_id, user=user)
 
-    is_publisher = user and user.role and user.role.is_system
-    if not is_publisher:
-        if user and user.current_identity == "assessed":
-            q = q.filter(Task.unit_id == user.unit_id)
-        elif user and user.current_identity == "assessor":
-            q = q.filter(Task.assessor_unit_id == user.unit_id)
-
-    tasks = q.join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
-             .order_by(AssessmentDimension.name, Task.id).all()
+    tasks = q.options(
+        joinedload(Task.assessment_dimension),
+        joinedload(Task.unit),
+        joinedload(Task.assessor_unit),
+        joinedload(Task.submissions),
+        joinedload(Task.scores),
+    ).join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
+     .order_by(AssessmentDimension.name, Task.id).all()
 
     year = _get_plan_year(plan_id)
     title = f"{year}年度考核任务书（全量）" if year else "考核任务书（全量）"
@@ -1035,20 +977,16 @@ def export_all_tasks():
     user = _get_user(int(get_jwt_identity()))
     plan_id = request.args.get("plan_id", type=int)
 
-    q = Task.query
-    if plan_id:
-        q = q.filter(Task.plan_id == plan_id)
+    q = build_task_query(plan_id=plan_id, user=user)
 
-    # 权限过滤（发布单位看全部）
-    is_publisher = user and user.role and user.role.is_system
-    if not is_publisher:
-        if user and user.current_identity == "assessed":
-            q = q.filter(Task.unit_id == user.unit_id)
-        elif user and user.current_identity == "assessor":
-            q = q.filter(Task.assessor_unit_id == user.unit_id)
-
-    tasks = q.join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
-             .order_by(Task.unit_id, AssessmentDimension.name, Task.id).all()
+    tasks = q.options(
+        joinedload(Task.assessment_dimension),
+        joinedload(Task.unit),
+        joinedload(Task.assessor_unit),
+        joinedload(Task.submissions),
+        joinedload(Task.scores),
+    ).join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
+     .order_by(Task.unit_id, AssessmentDimension.name, Task.id).all()
 
     # 按被考核单位分组
     unit_tasks = {}
@@ -1111,19 +1049,16 @@ def export_by_assessor():
     user = _get_user(int(get_jwt_identity()))
     plan_id = request.args.get("plan_id", type=int)
 
-    q = Task.query
-    if plan_id:
-        q = q.filter(Task.plan_id == plan_id)
+    q = build_task_query(plan_id=plan_id, user=user)
 
-    is_publisher = user and user.role and user.role.is_system
-    if not is_publisher:
-        if user and user.current_identity == "assessed":
-            q = q.filter(Task.unit_id == user.unit_id)
-        elif user and user.current_identity == "assessor":
-            q = q.filter(Task.assessor_unit_id == user.unit_id)
-
-    tasks = q.join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
-             .order_by(Task.assessor_unit_id, AssessmentDimension.name, Task.id).all()
+    tasks = q.options(
+        joinedload(Task.assessment_dimension),
+        joinedload(Task.unit),
+        joinedload(Task.assessor_unit),
+        joinedload(Task.submissions),
+        joinedload(Task.scores),
+    ).join(AssessmentDimension, Task.assessment_dimension_id == AssessmentDimension.id)\
+     .order_by(Task.assessor_unit_id, AssessmentDimension.name, Task.id).all()
 
     # 按主考单位分组
     assessor_tasks = {}

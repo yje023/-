@@ -1,7 +1,7 @@
 <template>
   <div class="content-card">
     <div class="search-bar">
-      <el-input v-model="search" placeholder="搜索机构名称" clearable @change="loadOrgs" style="width:240px" />
+      <el-input v-model="search" placeholder="搜索机构名称" clearable @change="loadOrgs" @keyup.enter="loadOrgs" style="width:240px" />
       <el-button type="primary" @click="openCreate(null)">新建机构</el-button>
       <el-button @click="downloadTpl">下载导入模板</el-button>
       <el-upload :show-file-list="false" :before-upload="handleImport" accept=".xlsx,.xls" style="display:inline-block">
@@ -11,7 +11,8 @@
       <el-button v-if="checkedIds.length" type="danger" @click="handleBatchDelete">批量删除({{ checkedIds.length }})</el-button>
     </div>
 
-    <el-table :data="treeList" row-key="id" default-expand-all :tree-props="{ children: 'children' }" :indent="30" @selection-change="onSelectionChange" ref="tableRef">
+    <el-table :data="treeList" row-key="id" default-expand-all :tree-props="{ children: 'children' }" :indent="30" @selection-change="onSelectionChange" ref="tableRef" v-loading="loading">
+      <template #empty><el-empty description="暂无机构数据" :image-size="80" /></template>
       <el-table-column type="selection" width="50" />
       <el-table-column prop="name" label="机构名称" />
       <el-table-column label="操作" width="260">
@@ -47,6 +48,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { getOrgs, createOrg, updateOrg, deleteOrg, batchDeleteOrgs, importOrgs, downloadTemplate, exportOrgs } from '../api/org'
 
 const search = ref('')
+const loading = ref(false)
 const treeList = ref([])
 const checkedIds = ref([])
 const tableRef = ref()
@@ -64,10 +66,11 @@ function onSelectionChange(selection) {
 }
 
 async function loadOrgs() {
+  loading.value = true
   try {
     const res = await getOrgs(search.value)
     treeList.value = res.data || []
-  } catch {}
+  } catch {} finally { loading.value = false }
 }
 
 function openCreate(parentId) {

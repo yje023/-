@@ -31,6 +31,10 @@ Thumbs.db
 .env
 *.log
 
+# Secret keys (auto-generated on first run)
+.secret_key
+.jwt_secret_key
+
 # Temp files
 ~$*
 _doc_extracted.txt

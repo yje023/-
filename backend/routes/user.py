@@ -28,7 +28,7 @@ def list_users():
     items = [{
         "id": u.id,
         "username": u.username,
-        "password": u.password_text or "",
+        "password": "",
         "unit_id": u.unit_id,
         "unit_name": u.unit.name if u.unit else "",
         "role_id": u.role_id,

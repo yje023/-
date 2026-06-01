@@ -207,7 +207,8 @@ const pwdRules = {
 
 function handleCommand(cmd) {
   if (cmd === 'logout') {
-    window.close()
+    auth.logout()
+    router.push('/login')
   } else if (cmd === 'password') {
     pwdForm.old_password = ''
     pwdForm.new_password = ''

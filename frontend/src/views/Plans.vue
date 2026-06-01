@@ -145,6 +145,7 @@
           <h4>被考核分组</h4>
           <div>
             <el-button v-if="checkedGroupIds.length" size="small" type="danger" @click="handleBatchDeleteGroups">批量删除({{ checkedGroupIds.length }})</el-button>
+            <el-button size="small" @click="handleDownloadGroupTemplate" style="margin-left:4px">下载模板</el-button>
             <el-upload :show-file-list="false" :before-upload="handleImportGroups" accept=".xlsx,.xls" style="display:inline-block;margin-left:4px">
               <el-button size="small">导入分组</el-button>
             </el-upload>
@@ -165,7 +166,7 @@
           </div>
           <div style="font-size:13px;color:#606266">被考核单位：<el-tag v-for="u in g.units" :key="u.id" size="small" style="margin:1px">{{ u.name }}</el-tag><span v-if="!g.units?.length">无</span></div>
           <div style="font-size:13px;color:#606266;margin-top:4px">考核维度权重：
-            <el-tag v-for="w in g.dimension_weights" v-if="w.weight > 0" :key="w.assessment_dimension_id" size="small" type="warning" style="margin:1px">{{ w.dimension_name }} {{ w.weight }}%</el-tag>
+            <template v-for="w in g.dimension_weights" :key="w.assessment_dimension_id"><el-tag v-if="w.weight > 0" size="small" type="warning" style="margin:1px">{{ w.dimension_name }} {{ w.weight }}%</el-tag></template>
           </div>
         </div>
       </template>
@@ -211,6 +212,7 @@ import { ref, reactive, onMounted, nextTick, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as api from '../api/plan'
 
+const loading = ref(false)
 const plans = ref([])
 const total = ref(0)
 const currentPage = ref(1)
@@ -219,14 +221,13 @@ const unitsTree = ref([])
 const assessorTree = ref()
 const groupUnitTree = ref()
 
-function isOrg(data) { return data.type === 'org' }
-
 async function loadPlans() {
+  loading.value = true
   try {
     const r = await api.getPlans({ page: currentPage.value, page_size: pageSize.value })
     if (r.data?.items) { plans.value = r.data.items; total.value = r.data.total }
     else { plans.value = r.data || []; total.value = plans.value.length }
-  } catch {}
+  } catch {} finally { loading.value = false }
 }
 async function loadUnitsTree() { try { const r = await api.getUnitsTree(); unitsTree.value = r.data || [] } catch {} }
 
@@ -294,7 +295,13 @@ async function handleAddDim() {
     dimVisible.value = false; await refreshDetail()
   } catch {}
 }
-async function saveDim(score, row) { try { await api.updateDimension(row.id, { score }); ElMessage.success('分值已更新') } catch {} }
+let saveDimTimer = null
+function saveDim(score, row) {
+  clearTimeout(saveDimTimer)
+  saveDimTimer = setTimeout(async () => {
+    try { await api.updateDimension(row.id, { score }); ElMessage.success('分值已更新') } catch {}
+  }, 500)
+}
 async function handleDeleteDim(row) {
   await ElMessageBox.confirm('确定删除该评价维度？', '确认', { type: 'warning' })
   try { await api.deleteDimension(row.id); ElMessage.success('删除成功'); await refreshDetail() } catch {}
@@ -388,6 +395,17 @@ async function handleBatchDeleteGroups() {
     checkedGroupIds.value = []
     await refreshDetail()
   } catch {}
+}
+function handleDownloadGroupTemplate() {
+  if (!detail.value) return
+  api.downloadGroupTemplate(detail.value.id).then(res => {
+    const blob = new Blob([res.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `被考核分组导入模板_${detail.value.name}.xlsx`; a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('模板下载成功')
+  }).catch(() => {})
 }
 function handleExportGroups() {
   if (!detail.value) return

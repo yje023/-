@@ -37,7 +37,7 @@
         <!-- 2025考核结果 -->
         <div class="panel-card">
           <div class="card-title">
-            2025年 考核结果管理
+            {{ filterYear }}年 考核结果管理
             <div class="title-tabs">
               <span :class="{ active: resultTab === '正职' }" @click.stop="resultTab = '正职'">正职</span>
               <span :class="{ active: resultTab === '副职' }" @click.stop="resultTab = '副职'">副职</span>
@@ -152,11 +152,12 @@ const filterYear = ref(2026); const filterPlanId = ref(null)
 const globalSearch = ref(''); const resultTab = ref('正职')
 const loading = ref(false)
 
+let scrollTimer = null
 function startResultScroll() {
   const wrap = document.querySelector('.result-table-wrap')
   if (!wrap) return
   let dir = 1
-  setInterval(function() {
+  scrollTimer = setInterval(function() {
     if (wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight) dir = -1
     if (wrap.scrollTop <= 0) dir = 1
     wrap.scrollTop += dir * 0.5
@@ -330,7 +331,7 @@ async function loadAll() {
 let rt; function onResize() { clearTimeout(rt); rt = setTimeout(() => chartInstances.forEach(c => { try { c.resize() } catch(_){} }), 200) }
 
 onMounted(async () => { await initEC(); await loadPlans(); await loadAll(); window.addEventListener('resize', onResize) })
-onUnmounted(() => { disposeAll(); window.removeEventListener('resize', onResize) })
+onUnmounted(() => { if (scrollTimer) clearInterval(scrollTimer); disposeAll(); window.removeEventListener('resize', onResize) })
 </script>
 
 <style scoped>

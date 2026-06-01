@@ -1,11 +1,12 @@
 <template>
   <div class="content-card">
     <div class="search-bar">
-      <el-input v-model="search" placeholder="搜索角色名称" clearable @change="loadRoles" style="width:240px" />
+      <el-input v-model="search" placeholder="搜索角色名称" clearable @change="loadRoles" @keyup.enter="loadRoles" style="width:240px" />
       <el-button type="primary" @click="openCreate">新建角色</el-button>
     </div>
 
-    <el-table :data="roles" border stripe>
+    <el-table :data="roles" border stripe v-loading="loading">
+      <template #empty><el-empty description="暂无角色数据" :image-size="80" /></template>
       <el-table-column prop="name" label="角色名称" />
       <el-table-column prop="is_system" label="类型" width="100">
         <template #default="{ row }">
@@ -52,6 +53,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getRoles, createRole, updateRole, deleteRole, getMenus } from '../api/role'
 
+const loading = ref(false)
 const search = ref('')
 const roles = ref([])
 const allMenus = ref([])
@@ -70,7 +72,8 @@ function getPermNames(perms) {
 }
 
 async function loadRoles() {
-  try { const res = await getRoles(search.value); roles.value = res.data || [] } catch {}
+  loading.value = true
+  try { const res = await getRoles(search.value); roles.value = res.data || [] } catch {} finally { loading.value = false }
 }
 
 const dialogVisible = ref(false)

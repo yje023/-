@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=考核评价系统
+Name[zh_CN]=考核评价系统
+Comment=一键启动考核评价系统
+Comment[zh_CN]=黔江区多维度精准考核评价管理平台
+Exec=bash -c 'cd "$(dirname "$(readlink -f "%k")")/.." && bash 一键启动.sh; read -p "按回车退出..."'
+Terminal=true
+Type=Application
+Categories=Office;
+Icon=utilities-terminal
+StartupNotify=true

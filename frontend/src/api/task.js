@@ -1,10 +1,12 @@
 import http from './index'
 
 export function getTasks(params) { return http.get('/tasks', { params }) }
+export function getTask(id) { return http.get(`/tasks/${id}`) }
 export function getTaskFilterOptions(planId) { return http.get('/tasks/filter-options', { params: { plan_id: planId } }) }
 export function createTask(data) { return http.post('/tasks', data) }
 export function updateTask(id, data) { return http.put(`/tasks/${id}`, data) }
 export function deleteTask(id) { return http.delete(`/tasks/${id}`) }
+export function batchDeleteTasks(ids) { return http.post('/tasks/batch-delete', { ids }) }
 export function batchDeleteAllTasks(planId) { return http.delete('/tasks/batch-all', { params: { plan_id: planId } }) }
 export function reviewTask(id, status) { return http.put(`/tasks/${id}/review`, { status }) }
 

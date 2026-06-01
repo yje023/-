@@ -1,7 +1,7 @@
 <template>
   <div class="content-card">
     <div class="search-bar">
-      <el-input v-model="search" placeholder="搜索单位名称" clearable @change="loadUnits" style="width:200px" />
+      <el-input v-model="search" placeholder="搜索单位名称" clearable @change="loadUnits" @keyup.enter="loadUnits" style="width:200px" />
       <el-select v-model="filterOrgId" placeholder="筛选机构" clearable @change="loadUnits" style="width:200px">
         <el-option v-for="o in flatOrgs" :key="o.id" :label="o.name" :value="o.id" />
       </el-select>
@@ -14,7 +14,7 @@
       <el-button v-if="checkedIds.length" type="danger" @click="handleBatchDelete">批量删除({{ checkedIds.length }})</el-button>
     </div>
 
-    <el-table :data="units" @selection-change="onSelectionChange" border stripe>
+    <el-table :data="units" @selection-change="onSelectionChange" border stripe v-loading="loading">
       <template #empty><el-empty description="暂无单位数据" :image-size="80" /></template>
       <el-table-column type="selection" width="50" />
       <el-table-column prop="name" label="单位名称" />
@@ -73,6 +73,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { getUnits, createUnit, updateUnit, deleteUnit, moveUnit, batchDeleteUnits, importUnits, downloadUnitTemplate, exportUnits } from '../api/unit'
 import { getOrgs } from '../api/org'
 
+const loading = ref(false)
 const search = ref('')
 const filterOrgId = ref(null)
 const units = ref([])
@@ -106,6 +107,7 @@ async function loadOrgs() {
 function onSelectionChange(sel) { checkedIds.value = sel.map(r => r.id) }
 
 async function loadUnits() {
+  loading.value = true
   try {
     const params = { page: unitPage.value, page_size: unitPageSize.value }
     if (search.value) params.search = search.value
@@ -113,7 +115,7 @@ async function loadUnits() {
     const res = await getUnits(params)
     if (res.data?.items) { units.value = res.data.items; unitTotal.value = res.data.total }
     else { units.value = res.data || []; unitTotal.value = units.value.length }
-  } catch {}
+  } catch {} finally { loading.value = false }
 }
 
 const dialogVisible = ref(false)

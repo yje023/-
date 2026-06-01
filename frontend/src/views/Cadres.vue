@@ -1,7 +1,7 @@
 <template>
   <div class="cadres-page">
     <div class="toolbar">
-      <el-input v-model="search" placeholder="搜索姓名..." style="width: 200px" clearable @change="load" />
+      <el-input v-model="search" placeholder="搜索姓名..." style="width: 200px" clearable @change="load" @keyup.enter="load" />
       <el-select v-model="filterUnitId" placeholder="按单位筛选" style="width: 240px; margin-left: 8px" clearable
         filterable @change="load">
         <el-option v-for="u in allUnits" :key="u.id" :label="u.name" :value="u.id" />
@@ -34,7 +34,7 @@
           <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
-      <template #empty>暂无干部数据</template>
+      <template #empty><el-empty description="暂无干部数据" :image-size="80" /></template>
     </el-table>
 
     <div v-if="total > 0" class="pagination-wrap">
@@ -239,7 +239,7 @@ async function handleImport(file) {
 
 async function downloadTpl() {
   const res = await downloadCadreTemplate()
-  const url = URL.createObjectURL(res)
+  const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url; a.download = '干部导入模板.xlsx'; a.click()
   URL.revokeObjectURL(url)
@@ -247,7 +247,7 @@ async function downloadTpl() {
 
 async function handleExport() {
   const res = await exportCadres()
-  const url = URL.createObjectURL(res)
+  const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url; a.download = '干部列表.xlsx'; a.click()
   URL.revokeObjectURL(url)

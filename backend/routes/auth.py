@@ -1,12 +1,38 @@
+import time
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from models import db, User
 
 auth_bp = Blueprint("auth", __name__)
 
+# 简易登录限流：每个IP每分钟最多5次尝试
+_login_attempts = {}  # {ip: [timestamps]}
+
+
+def _check_rate_limit(ip):
+    """检查IP登录频率，返回 (是否允许, 剩余等待秒数)"""
+    now = time.time()
+    window = 60  # 1分钟窗口
+    max_attempts = 5
+    if ip not in _login_attempts:
+        _login_attempts[ip] = []
+    # 清理过期记录
+    _login_attempts[ip] = [t for t in _login_attempts[ip] if now - t < window]
+    if len(_login_attempts[ip]) >= max_attempts:
+        wait = int(window - (now - _login_attempts[ip][0]))
+        return False, max(wait, 1)
+    _login_attempts[ip].append(now)
+    return True, 0
+
 
 @auth_bp.route("/api/auth/login", methods=["POST"])
 def login():
+    # 限流检查
+    client_ip = request.remote_addr or "127.0.0.1"
+    allowed, wait = _check_rate_limit(client_ip)
+    if not allowed:
+        return jsonify({"msg": f"登录尝试过于频繁，请 {wait} 秒后重试"}), 429
+
     data = request.get_json()
     username = data.get("username", "").strip()
     password = data.get("password", "")
@@ -91,7 +117,6 @@ def change_password():
         return jsonify({"msg": "新密码至少6位"}), 400
 
     user.set_password(new_pwd)
-    user.password_text = new_pwd
     user.must_change_password = False
     db.session.commit()
 

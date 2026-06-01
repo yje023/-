@@ -19,7 +19,7 @@
 ### 启动命令
 ```bash
 # 后端
-"C:\Users\Autismskyx\AppData\Local\Programs\Python\Python312\python.exe" backend/app.py
+"C:\Users\qcd11\AppData\Local\Programs\Python\Python312\python.exe" backend/app.py
 
 # 前端
 cd frontend && npm run dev
@@ -33,7 +33,7 @@ cd frontend && npm run dev
 5. API 变更同步更新 `docs/api-spec.md`
 
 ### 技术要点
-- Python 路径：`C:\Users\Autismskyx\AppData\Local\Programs\Python\Python312\python.exe`
+- Python 路径：`C:\Users\qcd11\AppData\Local\Programs\Python\Python312\python.exe`
 - 后端端口：5000，前端端口：3000
 - 前端通过 Vite proxy 转发 `/api` 到后端
 - 密码使用 Werkzeug bcrypt 加密

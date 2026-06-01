@@ -67,14 +67,14 @@
       <el-table-column type="selection" width="45" />
       <el-table-column prop="dimension_name" label="考核维度" width="120" />
       <el-table-column prop="assessor_unit_name" label="评价部门" width="120" />
-      <el-table-column prop="key_work" label="重点工作" min-width="150" show-overflow-tooltip>
-        <template #default="{ row }"><span v-html="highlight(row.key_work)"></span></template>
+      <el-table-column prop="key_work" label="重点工作" min-width="150">
+        <template #default="{ row }"><span class="cell-wrap" v-html="highlight(row.key_work)"></span></template>
       </el-table-column>
-      <el-table-column prop="main_task" label="主要任务" min-width="180" show-overflow-tooltip>
-        <template #default="{ row }"><span v-html="highlight(row.main_task)"></span></template>
+      <el-table-column prop="main_task" label="主要任务" min-width="180">
+        <template #default="{ row }"><span class="cell-wrap" v-html="highlight(row.main_task)"></span></template>
       </el-table-column>
-      <el-table-column prop="scoring_note" label="评分说明" min-width="150" show-overflow-tooltip>
-        <template #default="{ row }"><span v-html="highlight(row.scoring_note)"></span></template>
+      <el-table-column prop="scoring_note" label="评分说明" min-width="150">
+        <template #default="{ row }"><span class="cell-wrap" v-html="highlight(row.scoring_note)"></span></template>
       </el-table-column>
       <el-table-column prop="review_period" label="晾晒周期" width="90" />
       <el-table-column v-if="auth.currentIdentity==='assessor'" prop="unit_name" label="被考核单位" width="120" />
@@ -281,10 +281,17 @@ function toggleChip(item) {
 
 function clearChipFilter() { chipSelected.value = []; currentPage.value = 1; loadTasks() }
 
+function escapeHtml(text) {
+  const div = document.createElement('div')
+  div.textContent = text
+  return div.innerHTML
+}
+
 function highlight(text) {
-  if (!searchKey.value || !text) return text
+  if (!searchKey.value || !text) return escapeHtml(String(text))
+  const esc = escapeHtml(String(text))
   const kw = searchKey.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return String(text).replace(new RegExp(kw, 'gi'), m => `<mark style="background:#fef08a;padding:0 2px">${m}</mark>`)
+  return esc.replace(new RegExp(kw, 'gi'), m => `<mark style="background:#fef08a;padding:0 2px">${m}</mark>`)
 }
 
 function onPageSizeChange(size) {
@@ -315,7 +322,7 @@ async function loadTasks() {
     else if (chipCategory.value === 'key_work') params.key_works = chipSelected.value.map(c => c.name || c).join(',')
     else if (chipCategory.value === 'assessor') params.assessor_unit_id = chipSelected.value.map(c => c.id).join(',')
     else if (chipCategory.value === 'unit') params.unit_id = chipSelected.value.map(c => c.id).join(',')
-    else if (chipCategory.value === 'period') params.search = chipSelected.value.map(c => c.id).join(','); params.search_type = 'period'
+    else if (chipCategory.value === 'period') params.period = chipSelected.value.map(c => c.id).join(',')
   }
   try {
     const r = await api.getTasks(params)
@@ -405,9 +412,8 @@ async function handleDelete(row) {
 async function handleBatchDelete() {
   await ElMessageBox.confirm(`确定删除选中的 ${selectedRows.value.length} 个任务？`, '批量删除', { type: 'warning' })
   try {
-    for (const row of selectedRows.value) {
-      await api.deleteTask(row.id)
-    }
+    const ids = selectedRows.value.map(r => r.id)
+    await api.batchDeleteTasks(ids)
     ElMessage.success('批量删除成功')
     selectedRows.value = []
     await loadTasks()
@@ -492,7 +498,7 @@ function buildExportParams() {
     else if (chipCategory.value === 'key_work') params.key_works = chipSelected.value.map(c => c.name || c).join(',')
     else if (chipCategory.value === 'assessor') params.assessor_unit_id = chipSelected.value.map(c => c.id).join(',')
     else if (chipCategory.value === 'unit') params.unit_id = chipSelected.value.map(c => c.id).join(',')
-    else if (chipCategory.value === 'period') { params.search = chipSelected.value.map(c => c.id).join(','); params.search_type = 'period' }
+    else if (chipCategory.value === 'period') params.period = chipSelected.value.map(c => c.id).join(',')
   }
   return params
 }
@@ -527,4 +533,5 @@ onMounted(async () => { await loadPlansData(); await loadFilterOpts(); loadAllUn
 .chip-item.disabled { color: #f56c6c; border-color: #fbc4c4; background: #fef0f0; cursor: not-allowed; }
 .chip-item.disabled:hover { border-color: #fbc4c4; color: #f56c6c; }
 .chip-summary { font-size: 12px; color: #909399; margin-bottom: 8px; }
+.cell-wrap { white-space: pre-wrap; word-break: break-all; }
 </style>

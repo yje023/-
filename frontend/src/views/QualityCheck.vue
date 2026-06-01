@@ -251,11 +251,10 @@ async function updateStatus(row, status) {
 }
 
 async function openEdit(row) {
-  // Fetch task detail
+  // 通过单条查询获取任务详情
   try {
-    const r = await http.get('/tasks', { params: { plan_id: filterPlanId.value, page_size: 500 } })
-    const tasks = r.data?.items || r.data || []
-    const task = tasks.find(t => t.id === row.task_id)
+    const r = await http.get(`/tasks/${row.task_id}`)
+    const task = r.data?.data || r.data
     if (!task) { ElMessage.warning('未找到关联任务'); return }
 
     editTask.value = task
@@ -268,8 +267,17 @@ async function openEdit(row) {
     editForm.scoring_note = task.scoring_note
     editForm.review_period = task.review_period
 
-    // Find siblings (same plan + same assessor + same key_work)
-    const siblings = tasks.filter(t =>
+    // 查询同方案、同评价部门、同重点工作的关联任务
+    const sr = await http.get('/tasks', {
+      params: {
+        plan_id: filterPlanId.value,
+        assessor_unit_id: String(task.assessor_unit_id),
+        key_works: task.key_work,
+        page_size: 200,
+      }
+    })
+    const allTasks = sr.data?.items || sr.data || []
+    const siblings = allTasks.filter(t =>
       t.assessor_unit_id === task.assessor_unit_id && t.key_work === task.key_work
     )
     siblingCount.value = siblings.length

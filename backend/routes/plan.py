@@ -435,18 +435,222 @@ def export_groups(plan_id):
     if not plan:
         return jsonify({"msg": "方案不存在"}), 404
 
-    from utils.xlsx_handler import export_xlsx
-    headers = ["分组名称", "被考核单位", "考核维度权重"]
-    rows = []
-    for g in plan.assessed_groups:
-        unit_names = "\n".join(u.name for u in g.units) if g.units else ""
-        weights_str = ", ".join(f"{w.assessment_dimension.name}:{w.weight}%" for w in g.dimension_weights if w.weight > 0 and w.assessment_dimension)
-        rows.append([g.name, unit_names, weights_str])
+    # 收集方案的所有考核维度（按 sort_order 排序）
+    all_dims = []
+    for ed in sorted(plan.evaluation_dimensions, key=lambda d: d.sort_order):
+        for dim in sorted(ed.assessment_dimensions, key=lambda d: d.sort_order):
+            all_dims.append(dim)
 
-    output = export_xlsx(headers, rows)
+    if not all_dims:
+        return jsonify({"msg": "方案没有考核维度"}), 400
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+    import io
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "被考核分组"
+
+    # 样式定义
+    header_font = Font(name="黑体", bold=True, size=11)
+    title_font = Font(name="黑体", bold=True, size=12)
+    normal_font = Font(name="仿宋", size=11)
+    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin")
+    )
+    header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+
+    dim_count = len(all_dims)
+
+    # Row 1: 考核维度权重（合并 C1 到最后一列）
+    ws.merge_cells(start_row=1, start_column=3, end_row=1, end_column=2 + dim_count)
+    cell = ws.cell(row=1, column=3, value="考核维度权重")
+    cell.font = title_font
+    cell.alignment = center_align
+    cell.border = thin_border
+
+    # Row 1: A1 和 B1 合并到 A2 B2
+    ws.merge_cells(start_row=1, start_column=1, end_row=2, end_column=1)
+    cell_a = ws.cell(row=1, column=1, value="被考核分组")
+    cell_a.font = header_font
+    cell_a.alignment = center_align
+    cell_a.border = thin_border
+    cell_a.fill = header_fill
+
+    ws.merge_cells(start_row=1, start_column=2, end_row=2, end_column=2)
+    cell_b = ws.cell(row=1, column=2, value="被考核单位")
+    cell_b.font = header_font
+    cell_b.alignment = center_align
+    cell_b.border = thin_border
+    cell_b.fill = header_fill
+
+    # Row 2: 维度名称（C2 开始）
+    for j, dim in enumerate(all_dims):
+        col = 3 + j
+        cell = ws.cell(row=2, column=col, value=dim.name)
+        cell.font = header_font
+        cell.alignment = center_align
+        cell.border = thin_border
+        cell.fill = header_fill
+        ws.column_dimensions[cell.column_letter].width = 12
+
+    ws.column_dimensions['A'].width = 16
+    ws.column_dimensions['B'].width = 18
+
+    # 数据行
+    current_row = 3
+    for g in sorted(plan.assessed_groups, key=lambda g: g.id):
+        units = sorted(g.units, key=lambda u: u.id)
+        start_row = current_row
+
+        for i, unit in enumerate(units):
+            row = current_row
+            # B列：单位名称
+            cell_b = ws.cell(row=row, column=2, value=unit.name)
+            cell_b.font = normal_font
+            cell_b.alignment = center_align
+            cell_b.border = thin_border
+
+            # C-G列：维度权重（仅第一行填写，后续行合并）
+            for j, dim in enumerate(all_dims):
+                col = 3 + j
+                cell = ws.cell(row=row, column=col)
+                cell.border = thin_border
+                cell.alignment = center_align
+                if i == 0:
+                    weight_val = 0
+                    for w in g.dimension_weights:
+                        if w.assessment_dimension_id == dim.id:
+                            weight_val = w.weight / 100 if w.weight > 1 else w.weight
+                            break
+                    if weight_val > 0:
+                        cell.value = weight_val
+                        cell.font = normal_font
+                        # 格式化为百分比或小数
+                        cell.number_format = '0.00'
+
+            current_row += 1
+
+        # A列：分组名称（合并）
+        if len(units) > 1:
+            ws.merge_cells(start_row=start_row, start_column=1, end_row=current_row - 1, end_column=1)
+        cell_a = ws.cell(row=start_row, column=1, value=g.name)
+        cell_a.font = Font(name="黑体", bold=True, size=11)
+        cell_a.alignment = center_align
+        cell_a.border = thin_border
+
+        # 权重值合并（每组内除第一行外）
+        if len(units) > 1:
+            for j in range(dim_count):
+                col = 3 + j
+                ws.merge_cells(start_row=start_row, start_column=col, end_row=current_row - 1, end_column=col)
+
+    # 冻结表头
+    ws.freeze_panes = "A3"
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
     from flask import send_file
     return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                      as_attachment=True, download_name=f"被考核分组_{plan.name}.xlsx")
+
+
+@plan_bp.route("/api/plans/<int:plan_id>/groups/template", methods=["GET"])
+@jwt_required()
+def template_groups(plan_id):
+    plan = Plan.query.get(plan_id)
+    if not plan:
+        return jsonify({"msg": "方案不存在"}), 404
+
+    # 收集方案的所有考核维度
+    all_dims = []
+    for ed in sorted(plan.evaluation_dimensions, key=lambda d: d.sort_order):
+        for dim in sorted(ed.assessment_dimensions, key=lambda d: d.sort_order):
+            all_dims.append(dim)
+
+    if not all_dims:
+        return jsonify({"msg": "方案没有考核维度"}), 400
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+    import io
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "被考核分组"
+
+    header_font = Font(name="黑体", bold=True, size=11)
+    title_font = Font(name="黑体", bold=True, size=12)
+    normal_font = Font(name="仿宋", size=11)
+    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin")
+    )
+    header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+
+    dim_count = len(all_dims)
+
+    # Row 1: headers
+    ws.merge_cells(start_row=1, start_column=3, end_row=1, end_column=2 + dim_count)
+    cell = ws.cell(row=1, column=3, value="考核维度权重")
+    cell.font = title_font
+    cell.alignment = center_align
+    cell.border = thin_border
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=2, end_column=1)
+    cell_a = ws.cell(row=1, column=1, value="被考核分组")
+    cell_a.font = header_font
+    cell_a.alignment = center_align
+    cell_a.border = thin_border
+    cell_a.fill = header_fill
+
+    ws.merge_cells(start_row=1, start_column=2, end_row=2, end_column=2)
+    cell_b = ws.cell(row=1, column=2, value="被考核单位")
+    cell_b.font = header_font
+    cell_b.alignment = center_align
+    cell_b.border = thin_border
+    cell_b.fill = header_fill
+
+    for j, dim in enumerate(all_dims):
+        col = 3 + j
+        cell = ws.cell(row=2, column=col, value=dim.name)
+        cell.font = header_font
+        cell.alignment = center_align
+        cell.border = thin_border
+        cell.fill = header_fill
+        ws.column_dimensions[cell.column_letter].width = 12
+
+    ws.column_dimensions['A'].width = 16
+    ws.column_dimensions['B'].width = 18
+
+    # 示例数据行
+    for r in range(3, 8):
+        for col in range(1, 3 + dim_count):
+            cell = ws.cell(row=r, column=col)
+            cell.font = normal_font
+            cell.alignment = center_align
+            cell.border = thin_border
+
+    ws.cell(row=3, column=1, value="示例分组1")
+    ws.cell(row=3, column=2, value="示例单位A")
+    ws.cell(row=4, column=2, value="示例单位B")
+
+    ws.freeze_panes = "A3"
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    from flask import send_file
+    return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     as_attachment=True, download_name=f"被考核分组导入模板_{plan.name}.xlsx")
 
 
 @plan_bp.route("/api/plans/<int:plan_id>/groups/import", methods=["POST"])
@@ -470,7 +674,117 @@ def import_groups(plan_id):
     except Exception:
         return jsonify({"msg": "无法读取文件，请确认格式正确"}), 400
 
-    # 读表头，定位列索引
+    # 构建方案范围内的维度名称→id 映射
+    plan_dims = {}
+    for ed in plan.evaluation_dimensions:
+        for dim in ed.assessment_dimensions:
+            plan_dims[dim.name.strip()] = dim.id
+
+    # 构建方案范围内的被考核单位名称→id 映射
+    plan_units = {}
+    for g in plan.assessed_groups:
+        for u in g.units:
+            plan_units[u.name.strip()] = u.id
+
+    # 检测格式：row 1 是否有"被考核分组"（新格式A列），还是旧格式
+    row1_a = str(ws.cell(row=1, column=1).value or "").strip()
+    row2_a = str(ws.cell(row=2, column=1).value or "").strip()
+    is_new_format = "被考核分组" in row1_a or "被考核分组" in row2_a
+
+    if is_new_format:
+        # 新格式：Row 1 合并标题行，Row 2 是列头
+        # "被考核分组"/"被考核单位" 可能在 row1（合并单元格），维度名在 row2
+        name_col = None
+        unit_col = None
+        dim_cols = {}
+        for col in range(1, ws.max_column + 1):
+            val1 = str(ws.cell(row=1, column=col).value or "").strip()
+            val2 = str(ws.cell(row=2, column=col).value or "").strip()
+            if "被考核分组" in val1 or "被考核分组" in val2:
+                name_col = col
+            elif "被考核单位" in val1 or "被考核单位" in val2:
+                unit_col = col
+            elif val2:
+                dim_id = plan_dims.get(val2)
+                if dim_id:
+                    dim_cols[col] = dim_id
+
+        if not name_col:
+            return jsonify({"msg": "缺少「被考核分组」列"}), 400
+        if not unit_col:
+            return jsonify({"msg": "缺少「被考核单位」列"}), 400
+
+        created = 0
+        errors = []
+        current_group = None
+        current_group_name = None
+        unit_ids = []
+        weights = []
+
+        def _save_group():
+            nonlocal current_group, unit_ids, weights, created
+            if not current_group_name or not unit_ids:
+                return
+            group = AssessedGroup(name=current_group_name, plan_id=plan_id)
+            db.session.add(group)
+            db.session.flush()
+            group.units = Unit.query.filter(Unit.id.in_(unit_ids)).all()
+            for w in weights:
+                db.session.add(GroupDimensionWeight(group_id=group.id, **w))
+            created += 1
+            unit_ids = []
+            weights = []
+
+        data_start = 3  # 数据从第3行开始（第1行合并标题，第2行列头）
+        for row_idx in range(data_start, ws.max_row + 1):
+            row_name = str(ws.cell(row=row_idx, column=name_col).value or "").strip()
+            row_unit = str(ws.cell(row=row_idx, column=unit_col).value or "").strip()
+
+            # 如果 A 列有值，说明是新分组开始
+            if row_name:
+                _save_group()
+                current_group_name = row_name
+
+            if not current_group_name:
+                continue
+
+            if not row_unit:
+                continue
+
+            # 查找被考核单位
+            unit_id = plan_units.get(row_unit)
+            if not unit_id:
+                u = Unit.query.filter_by(name=row_unit).first()
+                if u:
+                    unit_id = u.id
+            if not unit_id:
+                errors.append(f"第{row_idx}行：被考核单位「{row_unit}」在方案中不存在")
+                continue
+
+            unit_ids.append(unit_id)
+
+            # 读取各维度权重
+            for col, dim_id in dim_cols.items():
+                val = ws.cell(row=row_idx, column=col).value
+                if val is not None:
+                    try:
+                        w = float(val)
+                        w = w / 100 if w > 1 else w
+                        if w > 0:
+                            weights.append({"assessment_dimension_id": dim_id, "weight": w * 100})
+                    except (ValueError, TypeError):
+                        pass
+
+        _save_group()
+        db.session.commit()
+
+        return jsonify({
+            "msg": f"导入完成：创建 {created} 个分组" + (f"，{len(errors)} 条异常" if errors else ""),
+            "success": created,
+            "errors": errors,
+        })
+
+    # 旧格式兼容
     header_map = {}
     for col in range(1, ws.max_column + 1):
         val = str(ws.cell(row=1, column=col).value or "").strip()
@@ -484,10 +798,6 @@ def import_groups(plan_id):
     if "name" not in header_map:
         return jsonify({"msg": "缺少「分组名称」列"}), 400
 
-    # 构建维度名称→id 映射
-    dims = {d.name: d.id for d in AssessmentDimension.query.join(
-        EvaluationDimension).filter(EvaluationDimension.plan_id == plan_id).all()}
-
     created = 0
     errors = []
     for row_idx in range(2, ws.max_row + 1):
@@ -495,20 +805,22 @@ def import_groups(plan_id):
         if not name:
             continue
 
-        # 被考核单位
         unit_ids = []
         if "units" in header_map:
             unit_str = str(ws.cell(row=row_idx, column=header_map["units"]).value or "").strip()
             for unit_name in unit_str.replace("\n", ",").replace("，", ",").split(","):
                 unit_name = unit_name.strip()
                 if unit_name:
-                    u = Unit.query.filter_by(name=unit_name).first()
-                    if u:
-                        unit_ids.append(u.id)
+                    uid = plan_units.get(unit_name)
+                    if not uid:
+                        u = Unit.query.filter_by(name=unit_name).first()
+                        if u:
+                            uid = u.id
+                    if uid:
+                        unit_ids.append(uid)
                     else:
                         errors.append(f"第{row_idx}行：单位「{unit_name}」不存在")
 
-        # 维度权重
         weights = []
         if "weights" in header_map:
             weight_str = str(ws.cell(row=row_idx, column=header_map["weights"]).value or "").strip()
@@ -521,11 +833,11 @@ def import_groups(plan_id):
                         weight_val = float(weight_val.replace("%", "").strip())
                     except ValueError:
                         continue
-                    dim_id = dims.get(dim_name)
+                    dim_id = plan_dims.get(dim_name)
                     if dim_id:
                         weights.append({"assessment_dimension_id": dim_id, "weight": weight_val})
                     else:
-                        errors.append(f"第{row_idx}行：考核维度「{dim_name}」不存在")
+                        errors.append(f"第{row_idx}行：考核维度「{dim_name}」不在方案中")
 
         group = AssessedGroup(name=name, plan_id=plan_id)
         db.session.add(group)
@@ -538,7 +850,6 @@ def import_groups(plan_id):
 
     db.session.commit()
 
-    from flask import jsonify
     return jsonify({
         "msg": f"导入完成：创建 {created} 个分组" + (f"，{len(errors)} 条异常" if errors else ""),
         "success": created,

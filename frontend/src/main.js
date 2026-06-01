@@ -18,4 +18,12 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component)
 }
 
+app.config.errorHandler = (err, vm, info) => {
+  console.error('Vue Error:', err, info)
+}
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Unhandled Promise Rejection:', event.reason)
+})
+
 app.mount('#app')

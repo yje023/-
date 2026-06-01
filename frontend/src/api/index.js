@@ -16,6 +16,7 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
   (res) => {
+    // blob 响应需要保留完整 response 对象供调用方取 Content-Type 等头信息
     if (res.config.responseType === 'blob') return res
     return res.data
   },
