@@ -1,7 +1,7 @@
 """任务质检服务：错别字、逻辑、标点、重复任务检测"""
 import re
 from collections import defaultdict
-from models import Task
+from models import db, Task, QualityIssue
 
 
 def _task_to_row(t):
@@ -22,41 +22,61 @@ def _task_to_row(t):
 
 
 def run_quality_check(plan_id=None):
-    """对指定方案的任务执行全部 4 类检测"""
+    """对指定方案的任务执行全部 4 类检测，结果写入 DB"""
     q = Task.query
     if plan_id:
         q = q.filter(Task.plan_id == plan_id)
     tasks = q.all()
     rows = [_task_to_row(t) for t in tasks]
 
-    results = {
-        "total_tasks": len(tasks),
-        "issues": [],
-        "summary": {"错别字": 0, "逻辑问题": 0, "标点符号": 0, "重复任务": 0},
-    }
+    # 清除该方案旧检测结果
+    if plan_id:
+        QualityIssue.query.filter_by(plan_id=plan_id).delete()
 
-    # 1. 错别字检测
-    typo = _check_typos(rows)
-    results["issues"].extend(typo)
-    results["summary"]["错别字"] = len(typo)
+    all_issues = []
 
-    # 2. 逻辑检测
-    logic = _check_logic(rows)
-    results["issues"].extend(logic)
-    results["summary"]["逻辑问题"] = len(logic)
+    def save_issues(issues_list):
+        for iss in issues_list:
+            qi = QualityIssue(
+                plan_id=plan_id,
+                task_id=iss.get("task_id"),
+                issue_type=iss["issue_type"],
+                column_name=iss.get("column", ""),
+                text=iss.get("text", "")[:500],
+                suggestion=iss.get("suggestion", "")[:500],
+                context=iss.get("context", "")[:500],
+                confidence=iss.get("confidence", "medium"),
+                status="pending",
+            )
+            db.session.add(qi)
+        all_issues.extend(issues_list)
 
-    # 3. 标点检测
-    punct = _check_punctuation(rows)
-    results["issues"].extend(punct)
-    results["summary"]["标点符号"] = len(punct)
+    # 1-3: 单任务检测
+    save_issues(_check_typos(rows))
+    save_issues(_check_logic(rows))
+    save_issues(_check_punctuation(rows))
 
-    # 4. 重复检测
+    # 4: 重复检测
     dups = _check_duplicates(rows)
-    results["issues"].extend(dups)
-    results["summary"]["重复任务"] = len(dups)
+    all_issues.extend(dups)
 
-    results["total_issues"] = len(results["issues"])
-    return results
+    db.session.commit()
+
+    # 统计
+    from collections import Counter
+    type_counts = Counter(i["issue_type"] for i in all_issues)
+
+    return {
+        "total_tasks": len(tasks),
+        "issues": all_issues,
+        "summary": {
+            "错别字": sum(1 for k, v in type_counts.items() if "错别字" in k),
+            "逻辑问题": sum(1 for k, v in type_counts.items() if "逻辑" in k),
+            "标点符号": sum(1 for k, v in type_counts.items() if "标点" in k),
+            "重复任务": sum(1 for k, v in type_counts.items() if "重复" in k),
+        },
+        "total_issues": len(all_issues),
+    }
 
 
 # ============ 1. 错别字检测 ============

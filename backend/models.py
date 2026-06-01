@@ -256,3 +256,24 @@ class AssessmentResult(db.Model):
     rank = db.Column(db.Integer, nullable=True, comment="排名")
 
     cadre = db.relationship("Cadre", backref="assessment_results")
+
+
+# ==================== 任务质检 ====================
+
+
+class QualityIssue(db.Model):
+    __tablename__ = "quality_issue"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    plan_id = db.Column(db.Integer, db.ForeignKey("plan.id"), nullable=False, comment="所属方案ID")
+    task_id = db.Column(db.Integer, db.ForeignKey("task.id"), nullable=False, comment="关联任务ID")
+    issue_type = db.Column(db.String(50), nullable=False, comment="问题分类")
+    column_name = db.Column(db.String(50), nullable=False, comment="字段名")
+    text = db.Column(db.String(500), comment="问题文本")
+    suggestion = db.Column(db.String(500), comment="修改建议")
+    context = db.Column(db.String(500), comment="上下文")
+    confidence = db.Column(db.String(20), default="medium", comment="置信度")
+    status = db.Column(db.String(20), default="pending", comment="pending/confirmed/resolved/ignored")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    plan = db.relationship("Plan", backref="quality_issues")
+    task = db.relationship("Task", backref="quality_issues")
