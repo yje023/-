@@ -16,9 +16,9 @@
         <el-option label="已提交" value="submitted" />
         <el-option label="已审核" value="reviewed" />
       </el-select>
-      <el-input v-model="searchKey" placeholder="文字搜索..." clearable @clear="onSearch" @keyup.enter="onSearch" style="width:160px" />
-      <el-button type="primary" @click="applyChipFilter" :disabled="!chipCategory || chipSelected.length === 0">搜索选中({{ chipSelected.length }})</el-button>
-      <el-button v-if="chipSelected.length" @click="clearChipFilter">清除筛选</el-button>
+      <el-input v-model="searchKey" placeholder="搜索..." clearable @clear="onSearch" @keyup.enter="onSearch" style="width:160px" />
+      <el-button type="primary" @click="onSearch">搜索</el-button>
+      <el-button v-if="chipCategory && chipSelected.length" @click="clearChipFilter">清除</el-button>
     </div>
 
     <!-- 方片筛选区 -->
@@ -271,8 +271,6 @@ function toggleChip(item) {
   if (idx >= 0) chipSelected.value.splice(idx, 1)
   else chipSelected.value.push(item)
 }
-
-function applyChipFilter() { currentPage.value = 1; loadTasks() }
 
 function clearChipFilter() { chipSelected.value = []; currentPage.value = 1; loadTasks() }
 
