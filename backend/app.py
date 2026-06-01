@@ -1,8 +1,8 @@
 import os
 import sys
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, request
 from flask_cors import CORS
-from flask_jwt_extended import JWTManager
+from flask_jwt_extended import JWTManager, create_access_token
 from config import Config
 from models import db
 
@@ -13,6 +13,32 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 jwt = JWTManager(app)
 db.init_app(app)
 
+
+def _get_admin_user_id():
+    """获取管理员用户 ID，若不存在则返回 None"""
+    from models import User
+    user = User.query.filter_by(must_change_password=False).first()
+    if user:
+        return str(user.id)
+    user = User.query.first()
+    return str(user.id) if user else None
+
+
+@app.before_request
+def desktop_auto_auth():
+    """桌面版自动认证：无 token 时注入管理员身份"""
+    if not request.path.startswith("/api/"):
+        return
+    if request.path == "/api/auth/login":
+        return
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        user_id = _get_admin_user_id()
+        if user_id:
+            token = create_access_token(identity=user_id)
+            request.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
+
+
 from routes.auth import auth_bp
 from routes.org import org_bp
 from routes.unit import unit_bp
@@ -21,6 +47,9 @@ from routes.role import role_bp
 from routes.plan import plan_bp
 from routes.task import task_bp
 from routes.dashboard import dashboard_bp
+from routes.checklist import checklist_bp
+from routes.cadre import cadre_bp
+from routes.assessment_result import result_bp
 app.register_blueprint(auth_bp)
 app.register_blueprint(org_bp)
 app.register_blueprint(unit_bp)
@@ -29,6 +58,9 @@ app.register_blueprint(role_bp)
 app.register_blueprint(plan_bp)
 app.register_blueprint(task_bp)
 app.register_blueprint(dashboard_bp)
+app.register_blueprint(checklist_bp)
+app.register_blueprint(cadre_bp)
+app.register_blueprint(result_bp)
 
 
 def _get_frontend_dir():
@@ -162,6 +194,94 @@ def _backfill_bonus_deduction():
         db.session.commit()
 
 
+def _clean_task_orphans():
+    """清洗任务表中孤立的 FK 引用"""
+    with app.app_context():
+        import sqlite3
+        db_path = app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", "")
+        conn = sqlite3.connect(db_path)
+        try:
+            orphan_dims = conn.execute("""
+                SELECT COUNT(*) FROM task
+                WHERE assessment_dimension_id IS NOT NULL
+                AND assessment_dimension_id NOT IN (SELECT id FROM assessment_dimension)
+            """).fetchone()[0]
+            if orphan_dims > 0:
+                conn.execute("""
+                    UPDATE task SET assessment_dimension_id = NULL
+                    WHERE assessment_dimension_id IS NOT NULL
+                    AND assessment_dimension_id NOT IN (SELECT id FROM assessment_dimension)
+                """)
+                conn.commit()
+                print(f"[数据清洗] 修复 {orphan_dims} 条任务的孤立考核维度引用")
+            orphan_units = conn.execute("""
+                SELECT COUNT(*) FROM task
+                WHERE unit_id IS NOT NULL
+                AND unit_id NOT IN (SELECT id FROM unit)
+            """).fetchone()[0]
+            if orphan_units > 0:
+                conn.execute("""
+                    UPDATE task SET unit_id = NULL
+                    WHERE unit_id IS NOT NULL
+                    AND unit_id NOT IN (SELECT id FROM unit)
+                """)
+                conn.commit()
+                print(f"[数据清洗] 修复 {orphan_units} 条任务的孤立被考核单位引用")
+            orphan_assessors = conn.execute("""
+                SELECT COUNT(*) FROM task
+                WHERE assessor_unit_id IS NOT NULL
+                AND assessor_unit_id NOT IN (SELECT id FROM unit)
+            """).fetchone()[0]
+            if orphan_assessors > 0:
+                conn.execute("""
+                    UPDATE task SET assessor_unit_id = NULL
+                    WHERE assessor_unit_id IS NOT NULL
+                    AND assessor_unit_id NOT IN (SELECT id FROM unit)
+                """)
+                conn.commit()
+                print(f"[数据清洗] 修复 {orphan_assessors} 条任务的孤立评价部门引用")
+            null_assessors = conn.execute("SELECT COUNT(*) FROM task WHERE assessor_unit_id IS NULL").fetchone()[0]
+            null_units = conn.execute("SELECT COUNT(*) FROM task WHERE unit_id IS NULL").fetchone()[0]
+            null_dims = conn.execute("SELECT COUNT(*) FROM task WHERE assessment_dimension_id IS NULL").fetchone()[0]
+            if null_assessors or null_units or null_dims:
+                print(f"[数据清洗] 当前仍有: assessor空={null_assessors}, unit空={null_units}, dim空={null_dims} (需重新导入修正)")
+        finally:
+            conn.close()
+
+
+def _seed_default_admin():
+    """首次运行时创建默认管理员"""
+    from models import Organization, Unit, User, Role
+
+    if User.query.first():
+        return  # 已有用户，跳过
+
+    org = Organization(name="系统管理", sort_order=0)
+    db.session.add(org)
+    db.session.flush()
+
+    unit = Unit(name="系统管理员", org_id=org.id)
+    db.session.add(unit)
+    db.session.flush()
+
+    role = Role(name="系统管理员", is_system=True)
+    db.session.add(role)
+    db.session.flush()
+
+    user = User(
+        username="admin",
+        unit_id=unit.id,
+        role_id=role.id,
+        current_identity="assessed",
+        must_change_password=False,
+        password_text="admin123",
+    )
+    user.set_password("admin123")
+    db.session.add(user)
+    db.session.commit()
+    print("已创建默认管理员账号: admin / admin123")
+
+
 def init_db():
     """初始化数据库"""
     with app.app_context():
@@ -169,6 +289,8 @@ def init_db():
         _migrate_add_column("evaluation_dimension", "is_bonus_deduction", "BOOLEAN", "0")
         _migrate_nullable_columns()
         _backfill_bonus_deduction()
+        _clean_task_orphans()
+        _seed_default_admin()
 
 
 if __name__ == "__main__":

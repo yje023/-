@@ -81,6 +81,24 @@ class RolePermission(db.Model):
     role = db.relationship("Role", back_populates="permissions")
 
 
+# ==================== 清单管理 ====================
+
+checklist_unit = db.Table(
+    "checklist_unit",
+    db.Column("checklist_id", db.Integer, db.ForeignKey("checklist.id"), primary_key=True),
+    db.Column("unit_id", db.Integer, db.ForeignKey("unit.id"), primary_key=True),
+)
+
+
+class Checklist(db.Model):
+    __tablename__ = "checklist"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(200), nullable=False, comment="清单名称")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    units = db.relationship("Unit", secondary=checklist_unit, backref="checklists")
+
+
 # ==================== 生产端数据管理 ====================
 
 plan_unit = db.Table(
@@ -202,3 +220,39 @@ class TaskScore(db.Model):
     scored_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     task = db.relationship("Task", back_populates="scores")
+
+
+# ==================== 干部管理 ====================
+
+
+class Cadre(db.Model):
+    __tablename__ = "cadre"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(100), nullable=False, comment="姓名")
+    unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=True, comment="所属单位ID")
+    gender = db.Column(db.String(10), default="男", comment="性别: 男/女")
+    birth_date = db.Column(db.Date, nullable=True, comment="出生日期")
+    education = db.Column(db.String(50), nullable=True, comment="最高学历")
+    fulltime_education = db.Column(db.String(50), nullable=True, comment="全日制学历")
+    political_status = db.Column(db.String(50), nullable=True, comment="政治面貌: 中共党员/民主党派/无党派")
+    ethnicity = db.Column(db.String(50), nullable=True, comment="民族")
+    position_type = db.Column(db.String(20), nullable=True, comment="职务类型: 正职/副职")
+    specialty = db.Column(db.String(200), nullable=True, comment="专业领域")
+    expertise = db.Column(db.String(500), nullable=True, comment="擅长领域")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    unit = db.relationship("Unit", backref="cadres")
+
+
+class AssessmentResult(db.Model):
+    __tablename__ = "assessment_result"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    cadre_id = db.Column(db.Integer, db.ForeignKey("cadre.id"), nullable=False, comment="干部ID")
+    plan_year = db.Column(db.Integer, nullable=False, comment="考核年度")
+    position_type = db.Column(db.String(20), nullable=True, comment="正职/副职")
+    total_score = db.Column(db.Float, nullable=True, comment="考核得分")
+    has_violation = db.Column(db.Boolean, default=False, comment="是否有违法违纪组织处理")
+    is_excellent = db.Column(db.Boolean, default=False, comment="班子是否评优")
+    rank = db.Column(db.Integer, nullable=True, comment="排名")
+
+    cadre = db.relationship("Cadre", backref="assessment_results")

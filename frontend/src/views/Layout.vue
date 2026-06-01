@@ -35,6 +35,14 @@
             <el-icon><Avatar /></el-icon>
             <span>角色管理</span>
           </el-menu-item>
+          <el-menu-item index="/checklists">
+            <el-icon><Tickets /></el-icon>
+            <span>清单管理</span>
+          </el-menu-item>
+          <el-menu-item index="/cadres">
+            <el-icon><UserFilled /></el-icon>
+            <span>干部管理</span>
+          </el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="production">
@@ -80,7 +88,7 @@
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="password">修改密码</el-dropdown-item>
-                <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+                <el-dropdown-item command="logout">退出系统</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -154,8 +162,8 @@ const versionDialogVisible = ref(false)
 async function fetchVersion() {
   try {
     const res = await http.get('/version')
-    versionCurrent.value = res.data?.current || ''
-    versionHistory.value = res.data?.history || []
+    versionCurrent.value = res.current || ''
+    versionHistory.value = res.history || []
   } catch {}
 }
 
@@ -194,8 +202,7 @@ const pwdRules = {
 
 function handleCommand(cmd) {
   if (cmd === 'logout') {
-    auth.logout()
-    router.push('/login')
+    window.close()
   } else if (cmd === 'password') {
     pwdForm.old_password = ''
     pwdForm.new_password = ''
