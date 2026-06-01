@@ -67,8 +67,15 @@
       <el-table-column type="selection" width="45" />
       <el-table-column prop="dimension_name" label="考核维度" width="120" />
       <el-table-column prop="assessor_unit_name" label="评价部门" width="120" />
-      <el-table-column prop="key_work" label="重点工作" min-width="150" show-overflow-tooltip />
-      <el-table-column prop="main_task" label="主要任务" min-width="180" show-overflow-tooltip />
+      <el-table-column prop="key_work" label="重点工作" min-width="150" show-overflow-tooltip>
+        <template #default="{ row }"><span v-html="highlight(row.key_work)"></span></template>
+      </el-table-column>
+      <el-table-column prop="main_task" label="主要任务" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }"><span v-html="highlight(row.main_task)"></span></template>
+      </el-table-column>
+      <el-table-column prop="scoring_note" label="评分说明" min-width="150" show-overflow-tooltip>
+        <template #default="{ row }"><span v-html="highlight(row.scoring_note)"></span></template>
+      </el-table-column>
       <el-table-column prop="review_period" label="晾晒周期" width="90" />
       <el-table-column v-if="auth.currentIdentity==='assessor'" prop="unit_name" label="被考核单位" width="120" />
       <el-table-column prop="status" label="状态" width="90">
@@ -273,6 +280,12 @@ function toggleChip(item) {
 }
 
 function clearChipFilter() { chipSelected.value = []; currentPage.value = 1; loadTasks() }
+
+function highlight(text) {
+  if (!searchKey.value || !text) return text
+  const kw = searchKey.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return String(text).replace(new RegExp(kw, 'gi'), m => `<mark style="background:#fef08a;padding:0 2px">${m}</mark>`)
+}
 
 function onPageSizeChange(size) {
   pageSize.value = size
