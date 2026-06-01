@@ -4,7 +4,7 @@
       <el-select v-model="filterPlanId" placeholder="筛选方案" clearable @change="onFilterChange" style="width:200px">
         <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
       </el-select>
-      <el-select v-model="chipCategory" placeholder="选择筛选维度" @change="onChipCategoryChange" style="width:150px">
+      <el-select v-model="chipCategory" placeholder="选择筛选维度" clearable @change="onChipCategoryChange" @clear="clearChipFilter" style="width:150px">
         <el-option label="考核维度" value="dimension" />
         <el-option label="重点工作" value="key_work" />
         <el-option label="评价部门" value="assessor" />
@@ -23,11 +23,12 @@
 
     <!-- 方片筛选区 -->
     <div v-if="chipCategory && chipOptions.length" class="chip-filter-area">
+      <div class="chip-summary" v-if="chipSummary">{{ chipSummary }}</div>
       <div class="chip-grid">
         <div
           v-for="item in chipOptions" :key="item.id || item"
-          :class="['chip-item', { active: isChipSelected(item) }]"
-          @click="toggleChip(item)"
+          :class="['chip-item', { active: isChipSelected(item), disabled: item.active === false }]"
+          @click="item.active !== false && toggleChip(item)"
         >
           {{ item.name || item }}
         </div>
@@ -213,21 +214,39 @@ const selectedRows = ref([])
 const chipCategory = ref('')
 const chipOptions = ref([])
 const chipSelected = ref([])
-const filterOpts = ref({ dimensions: [], key_works: [], assessor_units: [], assessed_units: [] })
+const chipSummary = ref('')  // 如 "1/11"
+const filterOpts = ref({ dimensions: [], key_works: [], assessor_units: [], assessed_units: [], review_periods: [] })
 
 function onSelectionChange(rows) { selectedRows.value = rows }
 function onSearch() { currentPage.value = 1; loadTasks() }
-function onFilterChange() { currentPage.value = 1; chipCategory.value = ''; chipOptions.value = []; chipSelected.value = []; loadFilterOpts(); loadTasks() }
+function onFilterChange() { currentPage.value = 1; chipCategory.value = ''; chipOptions.value = []; chipSelected.value = []; chipSummary.value = ''; loadFilterOpts(); loadTasks() }
 
 function onChipCategoryChange() {
-  chipSelected.value = []
+  chipSelected.value = []; chipSummary.value = ''
   const opts = filterOpts.value
-  if (chipCategory.value === 'dimension') chipOptions.value = opts.dimensions || []
-  else if (chipCategory.value === 'key_work') chipOptions.value = (opts.key_works || []).map(k => ({ id: k, name: k }))
-  else if (chipCategory.value === 'assessor') chipOptions.value = opts.assessor_units || []
-  else if (chipCategory.value === 'unit') chipOptions.value = opts.assessed_units || []
-  else if (chipCategory.value === 'period') chipOptions.value = opts.review_periods || []
-  else chipOptions.value = []
+  if (chipCategory.value === 'dimension' || chipCategory.value === 'assessor') {
+    // 合并预设 + 已有任务数据
+    const isDim = chipCategory.value === 'dimension'
+    const preset = isDim ? (availableDims.value || []) : (assessorUnits.value || [])
+    const active = isDim ? (opts.dimensions || []) : (opts.assessor_units || [])
+    const activeIds = new Set(active.map(a => a.id))
+    chipOptions.value = preset.map(p => ({
+      ...p,
+      active: activeIds.has(p.id),
+    }))
+    chipSummary.value = `${active.length}/${preset.length}`
+  } else if (chipCategory.value === 'key_work') {
+    chipOptions.value = (opts.key_works || []).map(k => ({ id: k, name: k, active: true }))
+    chipSummary.value = `${opts.key_works?.length || 0} 项`
+  } else if (chipCategory.value === 'unit') {
+    chipOptions.value = (opts.assessed_units || []).map(u => ({ ...u, active: true }))
+    chipSummary.value = `${opts.assessed_units?.length || 0} 个`
+  } else if (chipCategory.value === 'period') {
+    chipOptions.value = (opts.review_periods || []).map(p => ({ ...p, active: true }))
+    chipSummary.value = `${opts.review_periods?.length || 0} 种`
+  } else {
+    chipOptions.value = []
+  }
 }
 
 function isChipSelected(item) {
@@ -469,4 +488,7 @@ onMounted(async () => { await loadPlansData(); await loadFilterOpts(); loadAllUn
 .chip-item { display: inline-block; padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; background: #fff; border: 1px solid #dcdfe6; color: #606266; transition: all 0.2s; user-select: none; white-space: nowrap; }
 .chip-item:hover { border-color: #409eff; color: #409eff; }
 .chip-item.active { background: #409eff; color: #fff; border-color: #409eff; }
+.chip-item.disabled { color: #f56c6c; border-color: #fbc4c4; background: #fef0f0; cursor: not-allowed; }
+.chip-item.disabled:hover { border-color: #fbc4c4; color: #f56c6c; }
+.chip-summary { font-size: 12px; color: #909399; margin-bottom: 8px; }
 </style>
