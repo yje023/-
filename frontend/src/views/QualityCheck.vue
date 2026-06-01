@@ -1,5 +1,5 @@
 <template>
-  <div class="content-card">
+  <div class="content-card" v-loading="checking" element-loading-text="正在检测中，请稍候...">
     <div class="search-bar">
       <el-select v-model="filterPlanId" placeholder="选择考核方案" style="width:240px" @change="onPlanChange">
         <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
@@ -29,7 +29,8 @@
     </div>
 
     <!-- 问题列表 -->
-    <el-table :data="filteredIssues" border stripe v-loading="checking" @row-click="openEdit" style="cursor:pointer"
+    <el-table :data="pagedIssues" border stripe v-loading="loadingIssues" element-loading-text="加载中..."
+      @row-click="openEdit" style="cursor:pointer"
       empty-description="请选择方案后点击「开始检测」">
       <el-table-column label="状态" width="80">
         <template #default="{ row }">
@@ -60,6 +61,12 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <div v-if="issueTotal > 0" class="pagination-wrap">
+      <el-pagination v-model:current-page="issuePage" v-model:page-size="issuePageSize" :total="issueTotal"
+        :page-sizes="[20, 50, 100, 200]" layout="total, sizes, prev, pager, next, jumper"
+        @current-change="loadIssues" @size-change="loadIssues" />
+    </div>
 
     <!-- 任务编辑弹窗 -->
     <el-dialog v-model="editVisible" title="编辑任务" width="650px" @close="editTaskId = null">
@@ -144,15 +151,18 @@ import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getPlans, getPlan } from '../api/plan'
 import { getUnits } from '../api/unit'
-import { getTasks } from '../api/task'
 import http from '../api/index'
 
 const filterPlanId = ref(null)
 const filterType = ref('')
 const checking = ref(false)
+const loadingIssues = ref(false)
 const plans = ref([])
 const summary = ref(null)
 const allIssues = ref([])
+const issuePage = ref(1)
+const issuePageSize = ref(50)
+const issueTotal = ref(0)
 const allUnits = ref([])
 const assessorUnits = ref([])
 const availableDims = ref([])
@@ -166,6 +176,10 @@ const filteredIssues = computed(() => {
   let arr = allIssues.value.filter(i => i.status === 'pending')
   if (filterType.value) arr = arr.filter(i => i.issue_type === filterType.value)
   return arr
+})
+const pagedIssues = computed(() => {
+  const start = (issuePage.value - 1) * issuePageSize.value
+  return filteredIssues.value.slice(start, start + issuePageSize.value)
 })
 
 // Edit dialog
@@ -205,31 +219,25 @@ watch(filterPlanId, async (pid) => {
 
 async function loadIssues() {
   if (!filterPlanId.value) return
+  loadingIssues.value = true
   try {
     const r = await http.get('/quality-check/issues', { params: { plan_id: filterPlanId.value, page_size: 500 } })
     allIssues.value = (r.data?.data?.items || r.data?.items || []).map(i => ({
       ...i, unit_name: '', column: i.column_name, status: i.status || 'pending',
     }))
-    // Enrich with task data
-    for (const iss of allIssues.value) {
-      if (iss.task_id) {
-        try {
-          const tr = await getTasks({ plan_id: filterPlanId.value, page_size: 1 })
-          // We'll get task info on click instead
-        } catch (_) { }
-      }
-    }
-  } catch (_) { }
+    issueTotal.value = filteredIssues.value.length
+  } catch (_) { } finally { loadingIssues.value = false }
 }
 
 async function runCheck() {
   if (!filterPlanId.value) return
-  checking.value = true; summary.value = null; allIssues.value = []
+  checking.value = true; summary.value = null; allIssues.value = []; issuePage.value = 1
   try {
     const r = await http.post('/quality-check/run', { plan_id: filterPlanId.value })
     const data = r.data?.data || r.data
     summary.value = { total_tasks: data.total_tasks, summary: data.summary, total_issues: data.total_issues }
-    await loadIssues()
+    allIssues.value = data.issues || []
+    issueTotal.value = allIssues.value.filter(i => i.status === 'pending').length
     ElMessage.success(r.data?.msg || r.msg || '检测完成')
   } catch (_) { } finally { checking.value = false }
 }
@@ -245,7 +253,7 @@ async function updateStatus(row, status) {
 async function openEdit(row) {
   // Fetch task detail
   try {
-    const r = await getTasks({ plan_id: filterPlanId.value, page_size: 500 })
+    const r = await http.get('/tasks', { params: { plan_id: filterPlanId.value, page_size: 500 } })
     const tasks = r.data?.items || r.data || []
     const task = tasks.find(t => t.id === row.task_id)
     if (!task) { ElMessage.warning('未找到关联任务'); return }
