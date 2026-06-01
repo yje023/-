@@ -1,7 +1,8 @@
 """任务质检服务：错别字、逻辑、标点、重复任务检测"""
 import re
 from collections import defaultdict
-from models import db, Task, QualityIssue
+from models import db, Task, QualityIssue, ConfirmedPattern
+import hashlib
 
 
 def _task_to_row(t):
@@ -21,6 +22,19 @@ def _task_to_row(t):
     }
 
 
+def _hash_text(text):
+    return hashlib.md5(text.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _is_confirmed_pattern(issue):
+    """检查该问题是否已被确认无误（同类型+同文本）"""
+    text = issue.get("text", "")
+    if not text:
+        return False
+    h = _hash_text(text)
+    return ConfirmedPattern.query.filter_by(issue_type=issue["issue_type"], text_hash=h).first() is not None
+
+
 def run_quality_check(plan_id=None):
     """对指定方案的任务执行全部 4 类检测，结果写入 DB"""
     q = Task.query
@@ -29,14 +43,17 @@ def run_quality_check(plan_id=None):
     tasks = q.all()
     rows = [_task_to_row(t) for t in tasks]
 
-    # 清除该方案旧检测结果
+    # 清除该方案旧检测结果（仅清除 pending 状态）
     if plan_id:
-        QualityIssue.query.filter_by(plan_id=plan_id).delete()
+        QualityIssue.query.filter_by(plan_id=plan_id, status="pending").delete()
 
     all_issues = []
 
     def save_issues(issues_list):
         for iss in issues_list:
+            # 跳过已确认无误的模式
+            if _is_confirmed_pattern(iss):
+                continue
             qi = QualityIssue(
                 plan_id=plan_id,
                 task_id=iss.get("task_id"),

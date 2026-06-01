@@ -8,13 +8,8 @@
       <el-select v-model="filterType" placeholder="筛选问题类型" clearable style="width:180px;margin-left:8px">
         <el-option v-for="t in issueTypes" :key="t" :label="t" :value="t" />
       </el-select>
-      <el-select v-model="filterStatus" placeholder="筛选状态" clearable style="width:140px;margin-left:8px">
-        <el-option label="待处理" value="pending" />
-        <el-option label="确认无误" value="confirmed" />
-        <el-option label="已修复" value="resolved" />
-        <el-option label="已移除" value="ignored" />
-      </el-select>
       <el-button v-if="allIssues.length" @click="loadIssues">刷新</el-button>
+      <el-button @click="$router.push('/quality-check/manage')">问题管理 →</el-button>
     </div>
 
     <!-- 统计卡片 -->
@@ -119,7 +114,6 @@ import http from '../api/index'
 
 const filterPlanId = ref(null)
 const filterType = ref('')
-const filterStatus = ref('')
 const checking = ref(false)
 const plans = ref([])
 const summary = ref(null)
@@ -134,9 +128,8 @@ const periods = [
 
 const issueTypes = computed(() => [...new Set(allIssues.value.map(i => i.issue_type))].sort())
 const filteredIssues = computed(() => {
-  let arr = allIssues.value
+  let arr = allIssues.value.filter(i => i.status === 'pending')
   if (filterType.value) arr = arr.filter(i => i.issue_type === filterType.value)
-  if (filterStatus.value) arr = arr.filter(i => i.status === filterStatus.value)
   return arr
 })
 

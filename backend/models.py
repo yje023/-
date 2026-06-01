@@ -277,3 +277,12 @@ class QualityIssue(db.Model):
 
     plan = db.relationship("Plan", backref="quality_issues")
     task = db.relationship("Task", backref="quality_issues")
+
+
+class ConfirmedPattern(db.Model):
+    """确认无误的问题模式，后续检测自动排除"""
+    __tablename__ = "confirmed_pattern"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    issue_type = db.Column(db.String(50), nullable=False, comment="问题分类")
+    text_hash = db.Column(db.String(64), nullable=False, comment="文本 MD5")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)

@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required
-from models import db, Task, QualityIssue
-from services.quality_checker import run_quality_check
+from models import db, Task, QualityIssue, ConfirmedPattern
+from services.quality_checker import run_quality_check, _hash_text
 
 qc_bp = Blueprint("quality_check", __name__)
 
@@ -61,6 +61,15 @@ def update_issue(issue_id):
     data = request.get_json() or {}
     if "status" in data:
         i.status = data["status"]
+        # 确认无误时记录模式，后续检测自动排除
+        if data["status"] == "confirmed" and i.text:
+            h = _hash_text(i.text)
+            if not ConfirmedPattern.query.filter_by(issue_type=i.issue_type, text_hash=h).first():
+                db.session.add(ConfirmedPattern(issue_type=i.issue_type, text_hash=h))
+        # 撤回时删除已确认模式
+        if data["status"] == "pending" and i.text:
+            h = _hash_text(i.text)
+            ConfirmedPattern.query.filter_by(issue_type=i.issue_type, text_hash=h).delete()
     db.session.commit()
     return jsonify({"msg": "更新成功"})
 
