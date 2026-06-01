@@ -86,6 +86,10 @@ def run_quality_check(plan_id=None):
 
     db.session.commit()
 
+    # 给每个 issue 加上 status 字段，前端筛选需要
+    for iss in all_issues:
+        iss["status"] = "pending"
+
     # 统计
     from collections import Counter
     type_counts = Counter(i["issue_type"] for i in all_issues)
