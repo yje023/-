@@ -1,19 +1,32 @@
 <template>
   <div class="content-card">
     <div class="search-bar">
-      <el-input v-model="searchKey" placeholder="搜索任务..." clearable @clear="onSearch" @keyup.enter="onSearch" style="width:200px" />
       <el-select v-model="filterPlanId" placeholder="筛选方案" clearable @change="onFilterChange" style="width:200px">
         <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
+      </el-select>
+      <el-select v-model="filterDimIds" placeholder="考核维度" multiple collapse-tags collapse-tags-tooltip clearable @change="onSearch" style="width:200px">
+        <el-option v-for="d in filterOpts.dimensions" :key="d.id" :label="d.name" :value="d.id" />
+      </el-select>
+      <el-select v-model="filterKeyWorks" placeholder="重点工作" multiple collapse-tags collapse-tags-tooltip clearable filterable @change="onSearch" style="width:200px">
+        <el-option v-for="k in filterOpts.key_works" :key="k" :label="k" :value="k" />
+      </el-select>
+      <el-select v-model="filterAssessorIds" placeholder="评价部门" multiple collapse-tags collapse-tags-tooltip clearable filterable @change="onSearch" style="width:200px">
+        <el-option v-for="u in filterOpts.assessor_units" :key="u.id" :label="u.name" :value="u.id" />
+      </el-select>
+      <el-select v-model="filterUnitIds" placeholder="被考核单位" multiple collapse-tags collapse-tags-tooltip clearable filterable @change="onSearch" style="width:200px">
+        <el-option v-for="u in filterOpts.assessed_units" :key="u.id" :label="u.name" :value="u.id" />
       </el-select>
       <el-select v-model="filterStatus" placeholder="筛选状态" clearable @change="onFilterChange" style="width:140px">
         <el-option label="待填报" value="pending" />
         <el-option label="已提交" value="submitted" />
         <el-option label="已审核" value="reviewed" />
       </el-select>
+      <el-input v-model="searchKey" placeholder="文字搜索..." clearable @clear="onSearch" @keyup.enter="onSearch" style="width:160px" />
       <template v-if="auth.currentIdentity==='assessor'">
         <el-button type="primary" @click="openCreate">新建任务</el-button>
         <el-button @click="downloadTpl">下载导入模板</el-button>
         <el-button v-if="selectedRows.length" type="danger" @click="handleBatchDelete">删除选中({{ selectedRows.length }})</el-button>
+        <el-button v-if="filterPlanId" type="danger" plain @click="handleBatchDeleteAll">删除全部任务</el-button>
         <el-upload :show-file-list="false" :before-upload="handleImport" accept=".xlsx,.xls" :multiple="true" style="display:inline-block">
           <el-button :disabled="!filterPlanId">批量导入xlsx</el-button>
         </el-upload>
@@ -28,11 +41,11 @@
       </template>
       <el-table-column type="selection" width="45" />
       <el-table-column prop="dimension_name" label="考核维度" width="120" />
+      <el-table-column prop="assessor_unit_name" label="评价部门" width="120" />
       <el-table-column prop="key_work" label="重点工作" min-width="150" show-overflow-tooltip />
       <el-table-column prop="main_task" label="主要任务" min-width="180" show-overflow-tooltip />
       <el-table-column prop="review_period" label="晾晒周期" width="90" />
       <el-table-column v-if="auth.currentIdentity==='assessor'" prop="unit_name" label="被考核单位" width="120" />
-      <el-table-column v-if="auth.currentIdentity==='assessed'" prop="assessor_unit_name" label="评价部门" width="120" />
       <el-table-column prop="status" label="状态" width="90">
         <template #default="{ row }">
           <el-tag :type="row.status==='pending'?'info':row.status==='submitted'?'warning':'success'" size="small">
@@ -181,11 +194,16 @@ const pageSize = ref(20)
 const searchKey = ref('')
 const filterPlanId = ref(null)
 const filterStatus = ref('')
+const filterDimIds = ref([])
+const filterKeyWorks = ref([])
+const filterAssessorIds = ref([])
+const filterUnitIds = ref([])
+const filterOpts = ref({ dimensions: [], key_works: [], assessor_units: [], assessed_units: [] })
 const selectedRows = ref([])
 function onSelectionChange(rows) { selectedRows.value = rows }
 
 function onSearch() { currentPage.value = 1; loadTasks() }
-function onFilterChange() { currentPage.value = 1; loadTasks() }
+function onFilterChange() { currentPage.value = 1; filterDimIds.value = []; filterKeyWorks.value = []; filterAssessorIds.value = []; filterUnitIds.value = []; loadFilterOpts(); loadTasks() }
 
 function onPageSizeChange(size) {
   pageSize.value = size
@@ -193,14 +211,27 @@ function onPageSizeChange(size) {
   loadTasks()
 }
 
-async function loadPlansData() { try { const r = await getPlans(); plans.value = r.data?.items || r.data || [] } catch {} }
+async function loadPlansData() {
+  try {
+    const r = await getPlans()
+    plans.value = r.data?.items || r.data || []
+    if (plans.value.length && !filterPlanId.value) {
+      const sorted = [...plans.value].sort((a, b) => (b.year || 0) - (a.year || 0))
+      filterPlanId.value = sorted[0].id
+    }
+  } catch {}
+}
 async function loadAllUnits() { try { const r = await getUnits(); allUnits.value = r.data?.items || r.data || [] } catch {} }
 
 async function loadTasks() {
   const params = { page: currentPage.value, page_size: pageSize.value }
-  if (searchKey.value) params.search = searchKey.value
+  if (searchKey.value) { params.search = searchKey.value }
   if (filterPlanId.value) params.plan_id = filterPlanId.value
   if (filterStatus.value) params.status = filterStatus.value
+  if (filterDimIds.value.length) params.dimension_ids = filterDimIds.value.join(',')
+  if (filterKeyWorks.value.length) params.key_works = filterKeyWorks.value.join(',')
+  if (filterAssessorIds.value.length) params.assessor_unit_id = filterAssessorIds.value[0]
+  if (filterUnitIds.value.length) params.unit_id = filterUnitIds.value[0]
   try {
     const r = await api.getTasks(params)
     if (r.data?.items) {
@@ -211,6 +242,14 @@ async function loadTasks() {
       total.value = tasks.value.length
     }
   } catch {}
+}
+
+async function loadFilterOpts() {
+  if (!filterPlanId.value) { filterOpts.value = { dimensions: [], key_works: [], assessor_units: [], assessed_units: [] }; return }
+  try {
+    const r = await api.getTaskFilterOptions(filterPlanId.value)
+    filterOpts.value = r.data?.data || r.data || filterOpts.value
+  } catch { filterOpts.value = { dimensions: [], key_works: [], assessor_units: [], assessed_units: [] } }
 }
 
 watch(filterPlanId, async (pid) => {
@@ -225,6 +264,7 @@ watch(filterPlanId, async (pid) => {
       assessorUnits.value = []
       availableDims.value = []
     }
+    loadFilterOpts()
   }
 })
 
@@ -288,6 +328,20 @@ async function handleBatchDelete() {
     await loadTasks()
   } catch {}
 }
+async function handleBatchDeleteAll() {
+  const plan = plans.value.find(p => p.id === filterPlanId.value)
+  const planName = plan?.name || '当前方案'
+  await ElMessageBox.confirm(
+    `确定删除「${planName}」的全部任务？此操作不可恢复！`,
+    '删除全部任务',
+    { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+  )
+  try {
+    const r = await api.batchDeleteAllTasks(filterPlanId.value)
+    ElMessage.success(r.msg || '删除成功')
+    await loadTasks()
+  } catch {}
+}
 
 async function handleReview(row, status) {
   try { await api.reviewTask(row.id, status); ElMessage.success('审核完成'); await loadTasks() } catch {}
@@ -317,9 +371,24 @@ async function handleImport(file) {
   if (!filterPlanId.value) { ElMessage.warning('请先筛选考核方案'); return false }
   try {
     const r = await api.importTasks(filterPlanId.value, file)
-    ElMessage.success(r.msg || '导入成功')
-    if (r.errors) ElMessage.warning('部分失败：' + r.errors.join('; '))
-    await loadTasks()
+    const contentType = r.headers['content-type'] || ''
+    if (contentType.includes('application/json')) {
+      // 全部成功
+      const text = await r.data.text()
+      const data = JSON.parse(text)
+      ElMessage.success(data.msg || '导入成功')
+      await loadTasks()
+    } else {
+      // 有错误，返回的是 Excel 错误报告
+      const blob = r.data
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `考核任务导入错误报告.xlsx`
+      a.click()
+      URL.revokeObjectURL(url)
+      ElMessage.error('导入数据存在问题，已下载错误报告，请修正后重新导入')
+    }
   } catch {}
   return false
 }
@@ -347,5 +416,5 @@ async function handleExportAll() {
   } catch {}
 }
 
-onMounted(() => { loadPlansData(); loadAllUnits(); loadTasks() })
+onMounted(async () => { await loadPlansData(); await loadFilterOpts(); loadAllUnits(); loadTasks() })
 </script>
