@@ -4,6 +4,19 @@
   --sidebar-bg: #304156;
   --sidebar-text: #bfcbd9;
   --sidebar-active: #409eff;
+
+  /* 驾驶舱深色主题 */
+  --cockpit-bg: #0a0e27;
+  --cockpit-panel: #0f1535;
+  --cockpit-border: #1a2358;
+  --cockpit-card: #111844;
+  --cockpit-accent-cyan: #00d4ff;
+  --cockpit-accent-purple: #a855f7;
+  --cockpit-accent-orange: #f59e0b;
+  --cockpit-accent-green: #10b981;
+  --cockpit-text: #e2e8f0;
+  --cockpit-text-dim: #94a3b8;
+  --cockpit-glow: 0 0 20px rgba(0, 212, 255, 0.15);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }

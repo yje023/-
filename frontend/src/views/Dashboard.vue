@@ -1,330 +1,365 @@
 <template>
-  <div class="dashboard">
-    <!-- 顶部标题栏 -->
-    <div class="dash-hero">
-      <div class="hero-left">
-        <h2 class="hero-title">黔江区多维度精准考核评价系统</h2>
-        <p class="hero-sub">全区综合考核数据驾驶舱</p>
-      </div>
-      <div class="hero-right">
-        <el-select v-model="selectedPlanId" placeholder="选择考核方案" clearable @change="loadAll" size="large" style="width:320px" class="plan-select">
+  <div class="cockpit">
+    <!-- 顶部导航栏 -->
+    <header class="cockpit-header">
+      <div class="header-left">
+        <el-select v-model="filterYear" placeholder="考核年度" style="width:120px" @change="loadAll">
+          <el-option v-for="y in years" :key="y" :label="String(y)" :value="y" />
+        </el-select>
+        <el-select v-model="filterPlanId" placeholder="考核方案" style="width:180px;margin-left:8px" clearable @change="loadAll">
           <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
       </div>
-    </div>
+      <div class="header-title">绩效分析评估系统驾驶舱</div>
+      <div class="header-right">
+        <el-button size="small" ghost>镇街评价</el-button>
+        <el-input v-model="globalSearch" placeholder="综合搜索..." size="small" style="width:160px;margin-left:8px" clearable />
+      </div>
+    </header>
 
-    <!-- 统计卡片 -->
-    <div class="stat-grid">
-      <div class="stat-card card-blue">
-        <div class="card-inner">
-          <div class="card-icon-wrap"><el-icon :size="28"><Document /></el-icon></div>
-          <div class="card-body">
-            <div class="card-value">{{ overview.stats?.total_plans || 0 }}</div>
-            <div class="card-label">考核方案总数</div>
+    <!-- 三栏主体 -->
+    <main class="cockpit-body">
+      <!-- ========== 左侧 ========== -->
+      <section class="panel-col">
+        <!-- 任务解构 -->
+        <div class="panel-card">
+          <div class="card-title">任务解构管理</div>
+          <div ref="sunburstChart" class="chart-box" style="height:200px"></div>
+          <div class="card-stats-row">
+            <div class="stat-item"><span class="stat-num">{{ decompStats.precise }}</span><span class="stat-label">精准解构数</span></div>
+            <div class="stat-item"><span class="stat-num">{{ decompStats.declared }}</span><span class="stat-label">主动申报数</span></div>
           </div>
         </div>
-      </div>
-      <div class="stat-card card-amber">
-        <div class="card-inner">
-          <div class="card-icon-wrap"><el-icon :size="28"><OfficeBuilding /></el-icon></div>
-          <div class="card-body">
-            <div class="card-value">{{ overview.stats?.total_units || 0 }}</div>
-            <div class="card-label">被考核单位数</div>
+
+        <!-- 2025考核结果 -->
+        <div class="panel-card">
+          <div class="card-title">
+            2025年 考核结果管理
+            <div class="title-tabs">
+              <span :class="{ active: resultTab === '正职' }" @click.stop="resultTab = '正职'">正职</span>
+              <span :class="{ active: resultTab === '副职' }" @click.stop="resultTab = '副职'">副职</span>
+            </div>
+          </div>
+          <div class="result-table-wrap">
+            <table class="result-table">
+              <thead><tr><th>排名</th><th>单位</th><th>姓名</th><th>得分</th><th>违纪</th><th>评优</th></tr></thead>
+              <tbody>
+                <tr v-for="r in filteredResults" :key="r.rank">
+                  <td><span class="rank-badge">{{ r.rank }}</span></td>
+                  <td>{{ r.unit_name }}</td><td>{{ r.cadre_name }}</td><td>{{ r.total_score }}</td>
+                  <td><span :class="r.has_violation ? 'tag-bad' : 'tag-ok'">{{ r.has_violation ? '是' : '否' }}</span></td>
+                  <td><span :class="r.is_excellent ? 'tag-good' : ''">{{ r.is_excellent ? '优' : '' }}</span></td>
+                </tr>
+                <tr v-if="!filteredResults.length"><td colspan="6" style="color:#64748b">暂无数据</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
-      </div>
-      <div class="stat-card card-green">
-        <div class="card-inner">
-          <div class="card-icon-wrap"><el-icon :size="28"><List /></el-icon></div>
-          <div class="card-body">
-            <div class="card-value">{{ overview.stats?.total_tasks || 0 }}</div>
-            <div class="card-label">考核任务总数</div>
+      </section>
+
+      <!-- ========== 中间 ========== -->
+      <section class="panel-col panel-center-col">
+        <!-- 干部结构概览 -->
+        <div class="panel-card">
+          <div class="card-title">干部结构概览</div>
+          <div class="cadre-overview">
+            <div class="overview-left">
+              <div ref="totalRingChart" class="chart-box" style="width:130px;height:130px"></div>
+              <div class="total-num">{{ cadreStats.total }}</div>
+              <div class="total-label">总人数</div>
+            </div>
+            <div class="overview-right">
+              <div class="info-row"><span>男</span><span class="val">{{ cadreStats.gender?.male || 0 }}人</span></div>
+              <div class="info-row"><span>女</span><span class="val">{{ cadreStats.gender?.female || 0 }}人</span></div>
+              <div v-for="e in (cadreStats.education || []).slice(0,3)" :key="e.name" class="info-row">
+                <span>{{ e.name }}</span><span class="val">{{ e.value }}人</span>
+              </div>
+              <div ref="ageBarChart" class="chart-box" style="height:90px;margin-top:6px"></div>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="stat-card card-red">
-        <div class="card-inner">
-          <div class="card-icon-wrap"><el-icon :size="28"><DataAnalysis /></el-icon></div>
-          <div class="card-body">
-            <div class="card-value">{{ overview.stats?.completion_rate || 0 }}<span class="card-unit">%</span></div>
-            <div class="card-label">任务完成率</div>
+
+        <!-- 政治与专业属性 -->
+        <div class="panel-card">
+          <div class="card-title">政治与专业属性</div>
+          <div ref="politicalChart" class="chart-box" style="height:140px"></div>
+          <div class="prop-grid-2col">
+            <div ref="ethnicityChart" class="chart-box" style="height:130px"></div>
+            <div ref="specialtyCloud" class="chart-box" style="height:130px"></div>
+          </div>
+          <div class="card-subtitle">擅长领域</div>
+          <div ref="expertiseTree" class="chart-box" style="height:140px"></div>
+        </div>
+      </section>
+
+      <!-- ========== 右侧 ========== -->
+      <section class="panel-col">
+        <!-- 重点任务管理 -->
+        <div class="panel-card">
+          <div class="card-title">重点任务管理</div>
+          <div class="gauge-row">
+            <div ref="progressGauge" class="chart-box" style="width:130px;height:130px"></div>
+            <div class="gauge-info">
+              <div class="gauge-num">{{ taskProgress.total }}</div>
+              <div class="gauge-label">任务流转总数</div>
+            </div>
+          </div>
+          <div class="status-cards">
+            <div class="scard" v-for="sc in taskProgress.status_cards" :key="sc.label"
+              :style="{borderLeftColor: sc.color==='green'?'var(--g-cyan)':sc.color==='cyan'?'var(--g-green)':sc.color==='orange'?'var(--g-orange)':'#ef4444'}">
+              <div class="scard-num">{{ sc.value }} <small>({{ sc.rate }}%)</small></div>
+              <div class="scard-label">{{ sc.label }}</div>
+            </div>
+          </div>
+          <div class="dim-stats-mini">
+            <span v-for="d in taskProgress.dim_stats" :key="d.name" class="dim-chip">{{ d.name }} {{ d.count }}</span>
+          </div>
+          <div class="card-subtitle">任务明细</div>
+          <div class="mini-table-wrap">
+            <table class="mini-table">
+              <thead><tr><th>#</th><th>单位</th><th>任务</th><th>状态</th></tr></thead>
+              <tbody>
+                <tr v-for="(r, idx) in recentTasks.slice(0,8)" :key="idx">
+                  <td>{{ idx + 1 }}</td><td>{{ r.unit_name }}</td>
+                  <td class="ellipsis">{{ r.key_work }}</td>
+                  <td><el-tag size="small" :type="r.action === '已打分' ? 'success' : 'warning'">{{ r.action }}</el-tag></td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
-      </div>
-    </div>
 
-    <!-- 图表行1 -->
-    <div class="chart-grid cols-2">
-      <div class="panel">
-        <div class="panel-hd">
-          <h3>各维度任务统计</h3>
+        <!-- 考核系统进度监控 -->
+        <div class="panel-card">
+          <div class="card-title">考核系统进度监控</div>
+          <div ref="sankeyChart" class="chart-box" style="height:240px"></div>
         </div>
-        <div class="panel-bd">
-          <div ref="dimChartRef" class="chart-box"></div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-hd">
-          <h3>各单位完成率排名 TOP15</h3>
-        </div>
-        <div class="panel-bd">
-          <div ref="unitChartRef" class="chart-box"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 图表行2 -->
-    <div class="chart-grid cols-2">
-      <div class="panel">
-        <div class="panel-hd">
-          <h3>任务状态分布</h3>
-        </div>
-        <div class="panel-bd">
-          <div ref="statusChartRef" class="chart-box chart-box-sm"></div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-hd">
-          <h3>晾晒周期分布</h3>
-        </div>
-        <div class="panel-bd">
-          <div ref="periodChartRef" class="chart-box chart-box-sm"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 最近动态 -->
-    <div class="panel">
-      <div class="panel-hd">
-        <h3>最近考核动态</h3>
-      </div>
-      <div class="panel-bd" style="padding:0">
-        <el-table :data="overview.recent_activity || []" stripe size="small" style="width:100%">
-          <template #empty><el-empty description="暂无动态" :image-size="60" /></template>
-          <el-table-column prop="time" label="时间" width="170" />
-          <el-table-column prop="unit_name" label="单位" width="160" show-overflow-tooltip />
-          <el-table-column prop="dim_name" label="考核维度" width="120" show-overflow-tooltip />
-          <el-table-column prop="key_work" label="重点工作" min-width="160" show-overflow-tooltip />
-          <el-table-column prop="action" label="动作" width="90" align="center">
-            <template #default="{ row }">
-              <el-tag :type="row.action === '已打分' ? 'success' : 'warning'" size="small" effect="plain">
-                {{ row.action }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="score" label="得分" width="80" align="center">
-            <template #default="{ row }">{{ row.score != null ? row.score : '-' }}</template>
-          </el-table-column>
-        </el-table>
-      </div>
-    </div>
+      </section>
+    </main>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { getDashboardOverview } from '../api/dashboard'
 import { getPlans } from '../api/plan'
+import http from '../api/index'
 
-const selectedPlanId = ref(null)
+const filterYear = ref(2026); const filterPlanId = ref(null)
+const globalSearch = ref(''); const resultTab = ref('正职')
+const years = [2024, 2025, 2026, 2027]
+
 const plans = ref([])
-const overview = reactive({
-  stats: {}, dim_stats: [], unit_completion: [],
-  status_dist: {}, period_dist: {}, recent_activity: [],
-})
+const overview = ref({ stats:{}, dim_stats:[], unit_completion:[], status_dist:{}, period_dist:{}, recent_activity:[] })
+const decompStats = ref({ precise:0, declared:0, total:0 })
+const cadreStats = ref({ total:0, gender:{}, education:[], political:[], ethnicity:[], specialty:[], expertise:[], age_groups:[] })
+const taskProgress = ref({ total:0, status_cards:[], dim_stats:[], completion_rate:0 })
+const results = ref([]); const flowData = ref({ nodes:[], links:[] }); const decompData = ref({ sunburst:[], dim_list:[] })
 
-const dimChartRef = ref(null)
-const unitChartRef = ref(null)
-const statusChartRef = ref(null)
-const periodChartRef = ref(null)
+const recentTasks = computed(() => overview.value.recent_activity || [])
+const filteredResults = computed(() =>
+  results.value.length ? results.value.filter(r => r.position_type === resultTab.value) : []
+)
 
-let echartsMod = null
-let charts = { dim: null, unit: null, status: null, period: null }
+const sunburstChart = ref(null); const totalRingChart = ref(null); const ageBarChart = ref(null)
+const politicalChart = ref(null); const ethnicityChart = ref(null); const specialtyCloud = ref(null)
+const expertiseTree = ref(null); const progressGauge = ref(null); const sankeyChart = ref(null)
 
-async function ensureECharts() {
-  if (echartsMod) return echartsMod
-  echartsMod = await import('echarts')
-  return echartsMod
+let echarts = null; const chartInstances = []
+
+async function initEC() {
+  if (!echarts) { const m = await import('echarts'); echarts = m }
+}
+function disposeAll() { chartInstances.forEach(c => { try { c.dispose() } catch(_){} }); chartInstances.length = 0 }
+function mk(refKey, opt) {
+  if (!echarts || !refKey.value) return
+  const i = echarts.init(refKey.value); i.setOption(opt); chartInstances.push(i); return i
 }
 
-function disposeAll() {
-  Object.values(charts).forEach(c => { try { c?.dispose() } catch {} })
-  charts = { dim: null, unit: null, status: null, period: null }
+const COLORS = ['#00d4ff','#a855f7','#f59e0b','#10b981','#ef4444','#3b82f6','#ec4899','#6366f1']
+
+function charts() {
+  nextTick(() => {
+    disposeAll()
+
+    // -- 任务解构旭日图 --
+    const sd = decompData.value.sunburst || []
+    if (sd.length) {
+      const sunData = sd.map(function(d, i) {
+        var kids = (d.children || []).map(function(c) { return { name: c.name, value: c.value } })
+        return { name: d.name, value: d.value, itemStyle: { color: COLORS[i % 8] }, children: kids }
+      })
+      mk(sunburstChart, {
+        tooltip: { trigger: 'item' },
+        series: [{ type: 'sunburst', radius: ['15%', '82%'], data: sunData,
+          label: { color: '#e2e8f0', fontSize: 9 }, itemStyle: { borderColor: '#0a0e27', borderWidth: 1 } }]
+      })
+    }
+
+    // -- 总人数环形图 --
+    var total = cadreStats.value.total || 0
+    var totalData = total > 0
+      ? [{ value: total, name: '总人数', itemStyle: { color: '#00d4ff' } }]
+      : [{ value: 1, name: '暂无', itemStyle: { color: '#334155' } }]
+    mk(totalRingChart, { series: [{ type: 'pie', radius: ['60%', '85%'], data: totalData, label: { show: false }, emphasis: { scale: false } }] })
+
+    // -- 年龄段 --
+    var ages = cadreStats.value.age_groups || []
+    if (ages.length) {
+      var ageColors = ['#00d4ff', '#10b981', '#f59e0b', '#ef4444']
+      var ageData = ages.map(function(d, i) { return { value: d.value, itemStyle: { color: ageColors[i] } } })
+      mk(ageBarChart, {
+        grid: { left: 5, right: 5, top: 5, bottom: 5 }, xAxis: { type: 'value', show: false },
+        yAxis: { type: 'category', data: ages.map(function(d) { return d.name }), axisLabel: { color: '#94a3b8', fontSize: 9 }, axisLine: { show: false } },
+        series: [{ type: 'bar', data: ageData, barWidth: 10, label: { show: true, position: 'right', color: '#94a3b8', fontSize: 9 } }]
+      })
+    }
+
+    // -- 政治面貌 --
+    var pol = cadreStats.value.political || []
+    if (pol.length) {
+      var polColors = ['#ef4444', '#00d4ff', '#10b981']
+      mk(politicalChart, {
+        grid: { left: 5, right: 20, top: 10, bottom: 5 },
+        xAxis: { type: 'category', data: pol.map(function(d) { return d.name }), axisLabel: { color: '#94a3b8', fontSize: 9 } },
+        yAxis: { type: 'value', show: false },
+        series: [{ type: 'bar', data: pol.map(function(d, i) { return { value: d.value, itemStyle: { color: polColors[i] } } }),
+          barWidth: 20, label: { show: true, position: 'top', color: '#94a3b8', fontSize: 9 } }]
+      })
+    }
+
+    // -- 民族 --
+    var eth = cadreStats.value.ethnicity || []
+    if (eth.length) mk(ethnicityChart, {
+      tooltip: { trigger: 'item' },
+      series: [{ type: 'pie', radius: ['40%', '70%'],
+        data: eth.map(function(d, i) { return { name: d.name, value: d.value, itemStyle: { color: COLORS[i % 8] } } }),
+        label: { color: '#94a3b8', fontSize: 8 } }]
+    })
+
+    // -- 专业矩形树图 --
+    var spec = cadreStats.value.specialty || []
+    if (spec.length) mk(specialtyCloud, {
+      tooltip: {}, series: [{ type: 'treemap', roam: false, nodeClick: false, breadcrumb: { show: false },
+        data: spec.slice(0, 15).map(function(d) { return { name: d.name, value: d.value } }),
+        label: { color: '#e2e8f0', fontSize: 8 }, itemStyle: { borderColor: '#0a0e27', gapWidth: 1 },
+        levels: [{ colorMapping: 'value', color: ['#1e3a8a', '#00d4ff', '#a855f7'] }] }]
+    })
+
+    // -- 擅长领域矩形树图 --
+    var exp = cadreStats.value.expertise || []
+    if (exp.length) mk(expertiseTree, {
+      tooltip: {}, series: [{ type: 'treemap', roam: false, nodeClick: false, breadcrumb: { show: false },
+        data: exp.slice(0, 20).map(function(d) { return { name: d.name, value: d.value } }),
+        label: { color: '#e2e8f0', fontSize: 8 }, itemStyle: { borderColor: '#0a0e27', gapWidth: 1 },
+        levels: [{ colorMapping: 'value', color: ['#581c87', '#a855f7', '#c084fc'] }] }]
+    })
+
+    // -- 仪表盘 --
+    var rate = taskProgress.value.completion_rate || 0
+    mk(progressGauge, { series: [{ type: 'gauge', startAngle: 210, endAngle: -30, radius: '85%',
+      progress: { show: true, width: 12, itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0, colorStops: [{ offset: 0, color: '#00d4ff' }, { offset: 1, color: '#a855f7' }] } } },
+      axisLine: { lineStyle: { width: 12, color: [[1, '#1a2358']] } }, axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+      anchor: { show: false }, title: { show: false },
+      detail: { valueAnimation: true, formatter: '{value}%', color: '#e2e8f0', fontSize: 16, offsetCenter: [0, '60%'] },
+      data: [{ value: rate }] }] })
+
+    // -- 桑基图 --
+    var flow = flowData.value
+    if (flow.nodes && flow.nodes.length) mk(sankeyChart, {
+      tooltip: { trigger: 'item' }, series: [{ type: 'sankey', layout: 'none', emphasis: { focus: 'adjacency' }, nodeAlign: 'left',
+        data: flow.nodes.map(function(n, i) { return { name: n.name, itemStyle: { color: COLORS[i % 8] } } }),
+        links: flow.links.map(function(l) { return { source: l.source, target: l.target, value: l.value } }),
+        label: { color: '#94a3b8', fontSize: 8 } }]
+    })
+  })
 }
 
-async function renderCharts() {
-  await nextTick()
-  if (!dimChartRef.value) return
-
-  const ec = await ensureECharts()
-  disposeAll()
-
-  const commonGrid = { left: 10, right: 20, top: 20, bottom: 35 }
-
-  // 维度统计堆叠柱状图
-  charts.dim = ec.init(dimChartRef.value)
-  const dims = overview.dim_stats || []
-  charts.dim.setOption({
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    legend: { data: ['待填报', '已提交', '已审核'], bottom: 0, textStyle: { fontSize: 11 } },
-    grid: { ...commonGrid, top: 10, bottom: 35 },
-    xAxis: {
-      type: 'category', data: dims.map(d => d.name),
-      axisLabel: { rotate: dims.length > 6 ? 35 : 0, fontSize: 10, color: '#606266' },
-      axisTick: { alignWithLabel: true },
-    },
-    yAxis: { type: 'value', name: '任务数', nameTextStyle: { fontSize: 11, color: '#909399' } },
-    series: [
-      { name: '待填报', type: 'bar', stack: 'total', data: dims.map(d => d.pending || 0), itemStyle: { color: '#c0c4cc' }, barWidth: 28 },
-      { name: '已提交', type: 'bar', stack: 'total', data: dims.map(d => d.submitted || 0), itemStyle: { color: '#f4a941' }, barWidth: 28 },
-      { name: '已审核', type: 'bar', stack: 'total', data: dims.map(d => d.reviewed || 0), itemStyle: { color: '#5cb87a' }, barWidth: 28 },
-    ],
-  })
-
-  // 单位完成率横向柱状图
-  charts.unit = ec.init(unitChartRef.value)
-  const units = (overview.unit_completion || []).slice(0, 15)
-  charts.unit.setOption({
-    tooltip: { trigger: 'axis', formatter: '{b}: {c}%' },
-    grid: { left: 110, right: 50, top: 5, bottom: 5 },
-    xAxis: { type: 'value', name: '%', max: 100, nameTextStyle: { fontSize: 11 } },
-    yAxis: {
-      type: 'category', data: units.map(u => u.unit_name).reverse(),
-      axisLabel: { fontSize: 10, color: '#606266' }, inverse: true,
-      axisTick: { show: false },
-    },
-    series: [{
-      type: 'bar', data: units.map(u => u.rate).reverse(),
-      itemStyle: {
-        color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
-          colorStops: [{ offset: 0, color: '#4a90d9' }, { offset: 1, color: '#67b8f8' }] },
-        borderRadius: [0, 4, 4, 0],
-      },
-      barMaxWidth: 20,
-      label: { show: true, position: 'right', formatter: '{c}%', fontSize: 10, color: '#606266' },
-    }],
-  })
-
-  // 状态分布饼图
-  charts.status = ec.init(statusChartRef.value)
-  const sd = overview.status_dist || {}
-  charts.status.setOption({
-    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { bottom: 0, textStyle: { fontSize: 11 } },
-    series: [{
-      type: 'pie', radius: ['45%', '72%'], center: ['50%', '43%'],
-      avoidLabelOverlap: false,
-      itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
-      data: [
-        { value: sd.pending || 0, name: '待填报', itemStyle: { color: '#c0c4cc' } },
-        { value: sd.submitted || 0, name: '已提交', itemStyle: { color: '#f4a941' } },
-        { value: sd.reviewed || 0, name: '已审核', itemStyle: { color: '#5cb87a' } },
-      ],
-      label: { formatter: '{b}\n{c} 条', fontSize: 11 },
-    }],
-  })
-
-  // 晾晒周期饼图
-  charts.period = ec.init(periodChartRef.value)
-  const pd = overview.period_dist || {}
-  const periodColors = { '月度': '#4a90d9', '季度': '#36cfc9', '半年度': '#b37feb', '年度': '#ffb755' }
-  charts.period.setOption({
-    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { bottom: 0, textStyle: { fontSize: 11 } },
-    series: [{
-      type: 'pie', radius: ['45%', '72%'], center: ['50%', '43%'],
-      avoidLabelOverlap: false,
-      itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
-      data: Object.entries(pd).map(([k, v]) => ({ name: k, value: v, itemStyle: { color: periodColors[k] || '#909399' } })),
-      label: { formatter: '{b}\n{c} 条', fontSize: 11 },
-    }],
-  })
-
-  // 监听窗口resize
-  window.addEventListener('resize', handleResize)
-}
-
-function handleResize() {
-  Object.values(charts).forEach(c => { try { c?.resize() } catch {} })
+async function loadPlans() {
+  try { const r = await getPlans(); plans.value = r.data?.items || [] } catch(_){}
 }
 
 async function loadAll() {
   try {
-    const pRes = await getPlans({ page_size: 100 })
-    plans.value = pRes.data?.items || pRes.data || []
-
-    const dRes = await getDashboardOverview(selectedPlanId.value || null)
-    const data = dRes.data || {}
-    overview.stats = data.stats || {}
-    overview.dim_stats = data.dim_stats || []
-    overview.unit_completion = data.unit_completion || []
-    overview.status_dist = data.status_dist || {}
-    overview.period_dist = data.period_dist || {}
-    overview.recent_activity = data.recent_activity || []
-    await renderCharts()
-  } catch {}
+    const [ov, cs, tp, fl, rs, td] = await Promise.all([
+      getDashboardOverview(filterPlanId.value),
+      http.get('/dashboard/cadre-stats'),
+      http.get('/dashboard/task-progress', { params: { plan_id: filterPlanId.value } }),
+      http.get('/dashboard/flow', { params: { plan_id: filterPlanId.value } }),
+      http.get('/dashboard/results', { params: { plan_year: filterYear.value } }),
+      http.get('/dashboard/task-decomp', { params: { plan_id: filterPlanId.value } }),
+    ])
+    overview.value = ov.data || overview.value
+    cadreStats.value = cs.data?.data || cadreStats.value
+    taskProgress.value = tp.data?.data || taskProgress.value
+    flowData.value = fl.data?.data || flowData.value
+    results.value = rs.data?.data || []
+    decompData.value = td.data?.data || decompData.value
+    decompStats.value = decompData.value.stats || decompStats.value
+    charts()
+  } catch(_){}
 }
 
-onMounted(loadAll)
+let rt; function onResize() { clearTimeout(rt); rt = setTimeout(() => chartInstances.forEach(c => { try { c.resize() } catch(_){} }), 200) }
+
+onMounted(async () => { await initEC(); await loadPlans(); await loadAll(); window.addEventListener('resize', onResize) })
+onUnmounted(() => { disposeAll(); window.removeEventListener('resize', onResize) })
 </script>
 
 <style scoped>
-.dashboard { padding: 0; }
+:root { --bg: #0a0e27; --panel: #0f1535; --border: #1a2358; --card: #111844; --g-cyan: #00d4ff; --g-purple: #a855f7; --g-orange: #f59e0b; --g-green: #10b981; --text: #e2e8f0; --dim: #94a3b8; }
 
-/* 顶部 */
-.dash-hero {
-  display: flex; justify-content: space-between; align-items: center;
-  background: linear-gradient(135deg, #1a3a5c 0%, #2563a6 50%, #3b82c4 100%);
-  margin: -20px -20px 20px -20px;
-  padding: 24px 32px;
-  border-radius: 0 0 12px 12px;
-}
-.hero-title { margin: 0; font-size: 20px; color: #fff; font-weight: 600; letter-spacing: 1px; }
-.hero-sub { margin: 4px 0 0 0; font-size: 13px; color: rgba(255,255,255,0.7); }
-.plan-select :deep(.el-input__wrapper) { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.25); box-shadow: none; }
-.plan-select :deep(.el-input__inner) { color: #fff; }
-.plan-select :deep(.el-input__inner::placeholder) { color: rgba(255,255,255,0.5); }
+.cockpit { background: #0a0e27; min-height: 100vh; color: #e2e8f0; overflow: hidden; }
 
-/* 统计卡片 */
-.stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 16px; }
-.stat-card { border-radius: 8px; overflow: hidden; }
-.card-inner { display: flex; align-items: center; gap: 16px; padding: 20px 24px; }
-.card-icon-wrap {
-  width: 56px; height: 56px; border-radius: 12px;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-}
-.card-blue { background: #f0f5ff; border-left: 4px solid #4a90d9; }
-.card-blue .card-icon-wrap { background: #dce8fa; color: #4a90d9; }
-.card-amber { background: #fef7ed; border-left: 4px solid #f4a941; }
-.card-amber .card-icon-wrap { background: #fdedcf; color: #f4a941; }
-.card-green { background: #f1f9f2; border-left: 4px solid #5cb87a; }
-.card-green .card-icon-wrap { background: #d9f0de; color: #5cb87a; }
-.card-red { background: #fef2f2; border-left: 4px solid #e87474; }
-.card-red .card-icon-wrap { background: #fde0e0; color: #e87474; }
-.card-value { font-size: 28px; font-weight: 700; color: #1a1a2e; line-height: 1.1; }
-.card-unit { font-size: 16px; font-weight: 500; color: #909399; margin-left: 2px; }
-.card-label { font-size: 13px; color: #909399; margin-top: 2px; }
+.cockpit-header { display:flex; align-items:center; justify-content:space-between; padding:8px 20px; background:linear-gradient(180deg,#111844,#0f1535); border-bottom:1px solid #1a2358; position:sticky; top:0; z-index:100; }
+.header-left, .header-right { display:flex; align-items:center; gap:4px; flex-shrink:0; }
+.header-title { font-size:20px; font-weight:700; background:linear-gradient(90deg,#00d4ff,#a855f7); -webkit-background-clip:text; -webkit-text-fill-color:transparent; letter-spacing:4px; white-space:nowrap; }
 
-/* 图表面板 */
-.chart-grid { display: grid; gap: 16px; margin-bottom: 16px; }
-.chart-grid.cols-2 { grid-template-columns: 1fr 1fr; }
-.panel {
-  background: #fff; border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-  overflow: hidden;
-}
-.panel-hd {
-  padding: 14px 20px; border-bottom: 1px solid #f0f0f0;
-  display: flex; justify-content: space-between; align-items: center;
-}
-.panel-hd h3 { margin: 0; font-size: 14px; font-weight: 600; color: #303133; }
-.panel-bd { padding: 16px; }
-.chart-box { width: 100%; height: 300px; }
-.chart-box-sm { height: 260px; }
+.cockpit-body { display:grid; grid-template-columns:1fr 1.15fr 1fr; gap:12px; padding:12px; max-width:1920px; margin:0 auto; height:calc(100vh - 58px); overflow-y:auto; }
+.panel-col { display:flex; flex-direction:column; gap:12px; }
 
-@media (max-width: 1200px) {
-  .stat-grid { grid-template-columns: repeat(2, 1fr); }
-  .chart-grid.cols-2 { grid-template-columns: 1fr; }
-}
+.panel-card { background:#111844; border:1px solid #1a2358; border-radius:8px; padding:14px; box-shadow:0 0 20px rgba(0,212,255,0.08); }
+.card-title { font-size:15px; font-weight:600; margin-bottom:10px; display:flex; align-items:center; justify-content:space-between; color:#00d4ff; border-bottom:1px solid #1a2358; padding-bottom:8px; }
+.card-subtitle { font-size:12px; color:#a855f7; margin:6px 0 4px; font-weight:500; }
+.card-stats-row { display:flex; justify-content:space-around; padding-top:6px; }
+.stat-item { text-align:center; } .stat-num { display:block; font-size:22px; font-weight:700; color:#00d4ff; } .stat-label { font-size:11px; color:#94a3b8; }
+
+.title-tabs { display:flex; gap:4px; } .title-tabs span { font-size:11px; padding:2px 10px; border-radius:10px; cursor:pointer; color:#94a3b8; background:rgba(255,255,255,0.05); } .title-tabs span.active { background:#00d4ff; color:#000; }
+
+.chart-box { width:100%; overflow:hidden; }
+
+.result-table-wrap { max-height:200px; overflow-y:auto; }
+.result-table { width:100%; border-collapse:collapse; font-size:11px; }
+.result-table th { color:#94a3b8; padding:6px 4px; text-align:left; border-bottom:1px solid #1a2358; position:sticky; top:0; background:#111844; }
+.result-table td { padding:5px 4px; border-bottom:1px solid rgba(26,35,88,0.5); }
+.rank-badge { display:inline-block; width:22px; height:22px; line-height:22px; text-align:center; border-radius:50%; background:linear-gradient(135deg,#00d4ff,#a855f7); font-size:10px; font-weight:700; color:#fff; }
+.tag-bad { color:#ef4444; font-size:10px; } .tag-ok { color:#10b981; font-size:10px; } .tag-good { color:#f59e0b; font-size:10px; }
+
+.cadre-overview { display:flex; align-items:center; gap:10px; }
+.overview-left { text-align:center; flex-shrink:0; }
+.total-label { font-size:11px; color:#94a3b8; margin-top:-12px; position:relative; }
+.total-num { font-size:28px; font-weight:700; color:#00d4ff; }
+.overview-right { flex:1; font-size:11px; }
+.info-row { display:flex; justify-content:space-between; padding:2px 0; border-bottom:1px solid rgba(26,35,88,0.3); }
+.info-row .val { color:#f59e0b; }
+
+.prop-grid-2col { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+
+.gauge-row { display:flex; align-items:center; justify-content:center; gap:8px; }
+.gauge-info { text-align:center; } .gauge-num { font-size:28px; font-weight:700; color:#00d4ff; } .gauge-label { font-size:11px; color:#94a3b8; }
+
+.status-cards { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
+.scard { background:rgba(255,255,255,0.03); border-left:3px solid; border-radius:4px; padding:8px 10px; }
+.scard-num { font-size:16px; font-weight:700; } .scard-num small { font-size:10px; color:#94a3b8; font-weight:400; } .scard-label { font-size:10px; color:#94a3b8; margin-top:2px; }
+
+.dim-stats-mini { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }
+.dim-chip { font-size:10px; background:rgba(0,212,255,0.1); color:#00d4ff; padding:2px 6px; border-radius:3px; }
+
+.mini-table-wrap { max-height:160px; overflow-y:auto; }
+.mini-table { width:100%; border-collapse:collapse; font-size:10px; }
+.mini-table th { color:#94a3b8; padding:4px 3px; text-align:left; border-bottom:1px solid #1a2358; background:#111844; position:sticky; top:0; }
+.mini-table td { padding:3px; border-bottom:1px solid rgba(26,35,88,0.3); }
+.ellipsis { max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+::-webkit-scrollbar { width:4px; height:4px; } ::-webkit-scrollbar-thumb { background:rgba(0,212,255,0.3); border-radius:2px; }
 </style>
