@@ -318,11 +318,11 @@ async function loadAll() {
       http.get('/dashboard/task-decomp', { params: { plan_id: filterPlanId.value } }),
     ])
     overview.value = ov.data || overview.value
-    cadreStats.value = cs.data?.data || cadreStats.value
-    taskProgress.value = tp.data?.data || taskProgress.value
-    flowData.value = fl.data?.data || flowData.value
-    results.value = rs.data?.data || []
-    decompData.value = td.data?.data || decompData.value
+    cadreStats.value = cs.data || cadreStats.value
+    taskProgress.value = tp.data || taskProgress.value
+    flowData.value = fl.data || flowData.value
+    results.value = rs.data || []
+    decompData.value = td.data || decompData.value
     decompStats.value = decompData.value.stats || decompStats.value
     charts()
   } catch(_){} finally { loading.value = false }
