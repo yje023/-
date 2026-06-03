@@ -1,5 +1,5 @@
 <template>
-  <div class="login-container">
+  <div class="login-container" v-loading="loading" element-loading-text="正在登录，网络可能需要几秒钟..." element-loading-background="rgba(0,0,0,0.7)">
     <div class="login-card">
       <h2 class="login-title">黔江区多维度精准考核评价系统</h2>
       <el-form ref="formRef" :model="form" :rules="rules" size="large">
@@ -32,6 +32,13 @@ const form = reactive({ username: '', password: '' })
 const rules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+}
+
+// 开发用：快速切换账号（后续删除）
+async function quickLogin(username) {
+  form.username = username
+  form.password = '123456'
+  await handleLogin()
 }
 
 async function handleLogin() {

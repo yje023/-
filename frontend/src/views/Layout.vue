@@ -1,12 +1,13 @@
 <template>
   <el-container style="height:100vh">
-    <el-aside v-if="!isCockpit" width="220px" class="sidebar">
-      <div class="logo">精准考核系统</div>
+    <el-aside v-if="!isCockpit" :width="sidebarCollapsed ? '64px' : '220px'" class="sidebar" style="transition:width 0.3s">
+      <div class="logo" style="overflow:hidden;white-space:nowrap">{{ sidebarCollapsed ? '' : '精准考核系统' }}</div>
       <el-menu
         :default-active="activeMenu"
         background-color="#304156"
         text-color="#bfcbd9"
         active-text-color="#409eff"
+        :collapse="sidebarCollapsed"
         router
       >
         <el-menu-item index="/dashboard">
@@ -69,6 +70,9 @@
         <span>{{ versionCurrent }}</span>
       </div>
     </el-aside>
+    <div v-if="!isCockpit" class="sidebar-toggle-btn" @click="sidebarCollapsed = !sidebarCollapsed" :title="sidebarCollapsed ? '展开菜单' : '折叠菜单'">
+      <el-icon :size="14"><component :is="sidebarCollapsed ? 'DArrowRight' : 'DArrowLeft'" /></el-icon>
+    </div>
     <el-container>
       <el-header v-if="!isCockpit" class="top-header">
         <div class="header-left">
@@ -156,6 +160,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const isCockpit = computed(() => route.path === '/dashboard')
+const sidebarCollapsed = ref(false)
 
 const activeMenu = computed(() => route.path)
 
@@ -197,7 +202,6 @@ const pwdRules = {
   old_password: [{ required: true, message: '请输入旧密码', trigger: 'blur' }],
   new_password: [
     { required: true, message: '请输入新密码', trigger: 'blur' },
-    { min: 6, message: '密码至少6位', trigger: 'blur' },
   ],
   confirm_password: [
     { required: true, message: '请确认新密码', trigger: 'blur' },
@@ -264,6 +268,15 @@ async function handleSwitchIdentity() {
   display: flex;
   align-items: center;
 }
+.sidebar-toggle-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 18px; height: 48px;
+  position: relative; top: 18px;
+  margin-left: -9px; margin-right: -9px;
+  background: #e4e7ed; border: 1px solid #dcdfe6; border-radius: 0 6px 6px 0;
+  cursor: pointer; z-index: 20; transition: all 0.2s;
+}
+.sidebar-toggle-btn:hover { background: #c0c4cc; }
 .version-info {
   position: absolute;
   bottom: 0;

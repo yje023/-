@@ -15,6 +15,13 @@
       <template #empty><el-empty description="暂无机构数据" :image-size="80" /></template>
       <el-table-column type="selection" width="50" />
       <el-table-column prop="name" label="机构名称" />
+      <el-table-column label="机构类别" width="100">
+        <template #default="{ row }">
+          <el-tag v-if="row.category === 'street'" size="small" type="success">镇街</el-tag>
+          <el-tag v-else-if="row.category === 'dept'" size="small" type="primary">部门</el-tag>
+          <span v-else style="color:#909399">-</span>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="260">
         <template #default="{ row }">
           <el-button size="small" type="primary" link @click="openCreate(row.id)">新建子机构</el-button>
@@ -32,6 +39,12 @@
         </el-form-item>
         <el-form-item label="机构名称" prop="name">
           <el-input v-model="form.name" placeholder="请输入机构名称" />
+        </el-form-item>
+        <el-form-item label="机构类别">
+          <el-select v-model="form.category" placeholder="选择机构类别" style="width:100%" clearable>
+            <el-option label="镇街" value="street" />
+            <el-option label="部门" value="dept" />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -56,7 +69,7 @@ const dialogVisible = ref(false)
 const isEdit = ref(false)
 const editId = ref(null)
 const formRef = ref()
-const form = reactive({ name: '', parent_id: null })
+const form = reactive({ name: '', parent_id: null, category: '' })
 const rules = {
   name: [{ required: true, message: '请输入机构名称', trigger: 'blur' }],
 }
@@ -78,6 +91,7 @@ function openCreate(parentId) {
   editId.value = null
   form.name = ''
   form.parent_id = parentId
+  form.category = ''
   dialogVisible.value = true
 }
 
@@ -86,6 +100,7 @@ function openEdit(row) {
   editId.value = row.id
   form.name = row.name
   form.parent_id = row.parent_id
+  form.category = row.category || ''
   dialogVisible.value = true
 }
 
@@ -94,10 +109,10 @@ async function handleSave() {
   if (!valid) return
   try {
     if (isEdit.value) {
-      await updateOrg(editId.value, { name: form.name, parent_id: form.parent_id || null })
+      await updateOrg(editId.value, { name: form.name, parent_id: form.parent_id || null, category: form.category })
       ElMessage.success('编辑成功')
     } else {
-      await createOrg({ name: form.name, parent_id: form.parent_id || null })
+      await createOrg({ name: form.name, parent_id: form.parent_id || null, category: form.category })
       ElMessage.success('创建成功')
     }
     dialogVisible.value = false

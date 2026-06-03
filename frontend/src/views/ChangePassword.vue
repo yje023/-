@@ -8,7 +8,7 @@
           <el-input v-model="form.old_password" type="password" placeholder="旧密码" show-password prefix-icon="Lock" />
         </el-form-item>
         <el-form-item prop="new_password">
-          <el-input v-model="form.new_password" type="password" placeholder="新密码（至少6位）" show-password prefix-icon="Key" />
+          <el-input v-model="form.new_password" type="password" placeholder="请输入新密码" show-password prefix-icon="Key" />
         </el-form-item>
         <el-form-item prop="confirm_password">
           <el-input v-model="form.confirm_password" type="password" placeholder="确认新密码" show-password prefix-icon="Key" @keyup.enter="handleSubmit" />
@@ -38,7 +38,6 @@ const rules = {
   old_password: [{ required: true, message: '请输入旧密码', trigger: 'blur' }],
   new_password: [
     { required: true, message: '请输入新密码', trigger: 'blur' },
-    { min: 6, message: '密码至少6位', trigger: 'blur' },
   ],
   confirm_password: [
     { required: true, message: '请确认新密码', trigger: 'blur' },

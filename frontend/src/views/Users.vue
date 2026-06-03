@@ -125,7 +125,7 @@ const form = reactive({ username: '', password: '', unit_id: null, role_id: null
 const rules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
   unit_id: [{ required: true, message: '请选择单位', trigger: 'change' }],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }, { min: 6, message: '密码至少6位', trigger: 'blur' }],
+  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
 }
 
 function openCreate() {

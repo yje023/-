@@ -1,35 +1,35 @@
 import http from './index'
 
-export function getChecklists(params) {
-  return http.get('/checklists', { params })
+export function getChecklistItems(params) {
+  return http.get('/checklist-items', { params })
 }
 
-export function createChecklist(data) {
-  return http.post('/checklists', data)
+export function createChecklistItem(data) {
+  return http.post('/checklist-items', data)
 }
 
-export function updateChecklist(id, data) {
-  return http.put(`/checklists/${id}`, data)
+export function updateChecklistItem(id, data) {
+  return http.put(`/checklist-items/${id}`, data)
 }
 
-export function deleteChecklist(id) {
-  return http.delete(`/checklists/${id}`)
+export function deleteChecklistItem(id) {
+  return http.delete(`/checklist-items/${id}`)
 }
 
-export function batchDeleteChecklists(ids) {
-  return http.post('/checklists/batch-delete', { ids })
+export function batchDeleteChecklistItems(ids) {
+  return http.post('/checklist-items/batch-delete', { ids })
 }
 
-export function importChecklists(file) {
+export function importChecklistItems(file) {
   const fd = new FormData()
   fd.append('file', file)
-  return http.post('/checklists/import', fd)
+  return http.post('/checklist-items/import', fd)
 }
 
-export function exportChecklists() {
-  return http.get('/checklists/export', { responseType: 'blob' })
+export function exportChecklistItems(params) {
+  return http.get('/checklist-items/export', { params, responseType: 'blob' })
 }
 
 export function downloadChecklistTemplate() {
-  return http.get('/checklists/template', { responseType: 'blob' })
+  return http.get('/checklist-items/template', { responseType: 'blob' })
 }

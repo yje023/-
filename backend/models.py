@@ -21,6 +21,7 @@ class Organization(db.Model):
     name = db.Column(db.String(200), nullable=False, comment="机构名称")
     parent_id = db.Column(db.Integer, db.ForeignKey("organization.id"), nullable=True, comment="上级机构ID")
     sort_order = db.Column(db.Integer, default=0, comment="排序")
+    category = db.Column(db.String(20), default="", comment="机构类别: street/dept")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     parent = db.relationship("Organization", remote_side=[id], backref="children")
@@ -83,20 +84,36 @@ class RolePermission(db.Model):
 
 # ==================== 清单管理 ====================
 
-checklist_unit = db.Table(
-    "checklist_unit",
-    db.Column("checklist_id", db.Integer, db.ForeignKey("checklist.id"), primary_key=True),
-    db.Column("unit_id", db.Integer, db.ForeignKey("unit.id"), primary_key=True),
-)
-
-
-class Checklist(db.Model):
-    __tablename__ = "checklist"
+class ChecklistItem(db.Model):
+    __tablename__ = "checklist_item"
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    name = db.Column(db.String(200), nullable=False, comment="清单名称")
+    org_category = db.Column(db.String(10), nullable=False, comment="street/dept")
+    item_category = db.Column(db.String(20), nullable=False, comment="basic/cooperative/recall")
+    seq_num = db.Column(db.Integer, default=0, comment="序号")
+    name = db.Column(db.String(500), nullable=False, comment="事项名称")
+    unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False, comment="关联单位")
+    street_unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=True, comment="来源镇街(配合/收回专用)")
+    superior_dept_duty = db.Column(db.String(500), nullable=True, comment="上级部门职责")
+    street_duty = db.Column(db.String(500), nullable=True, comment="镇街配合职责")
+    工作方式 = db.Column(db.String(500), nullable=True, comment="工作方式")
+    is_synced = db.Column(db.Boolean, default=False, comment="是否为同步条目(只读)")
+    source_item_id = db.Column(db.Integer, db.ForeignKey("checklist_item.id"), nullable=True, comment="源事项ID")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    units = db.relationship("Unit", secondary=checklist_unit, backref="checklists")
+    unit = db.relationship("Unit", foreign_keys=[unit_id])
+    street_unit = db.relationship("Unit", foreign_keys=[street_unit_id])
+
+
+# ==================== 用户偏好 ====================
+
+class ChipSortOrder(db.Model):
+    __tablename__ = "chip_sort_order"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    page = db.Column(db.String(50), nullable=False, comment="tasks / quality_check")
+    dimension_key = db.Column(db.String(50), nullable=False)
+    sort_order = db.Column(db.Text, nullable=False, comment="JSON数组，芯片ID顺序")
+    __table_args__ = (db.UniqueConstraint("user_id", "page", "dimension_key", name="uq_chip_sort"),)
 
 
 # ==================== 生产端数据管理 ====================
@@ -199,6 +216,7 @@ class Task(db.Model):
     assessor_unit = db.relationship("Unit", foreign_keys=[assessor_unit_id], backref="assigned_tasks")
     submissions = db.relationship("TaskSubmission", back_populates="task", cascade="all, delete-orphan")
     scores = db.relationship("TaskScore", back_populates="task", cascade="all, delete-orphan")
+    quality_issues = db.relationship("QualityIssue", back_populates="task", cascade="all, delete-orphan")
 
 
 class TaskSubmission(db.Model):
@@ -276,13 +294,38 @@ class QualityIssue(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     plan = db.relationship("Plan", backref="quality_issues")
-    task = db.relationship("Task", backref="quality_issues")
+    task = db.relationship("Task", back_populates="quality_issues")
 
 
 class ConfirmedPattern(db.Model):
     """确认无误的问题模式，后续检测自动排除"""
     __tablename__ = "confirmed_pattern"
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    plan_id = db.Column(db.Integer, nullable=True, comment="方案ID，null 表示全局")
     issue_type = db.Column(db.String(50), nullable=False, comment="问题分类")
     text_hash = db.Column(db.String(64), nullable=False, comment="文本 MD5")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+# ==================== 疑似以指标考指标 ====================
+
+
+class ProxyMetricPair(db.Model):
+    """疑似以指标考指标：中间单位收到指标类任务后，向下转发了语义相似的指标任务"""
+    __tablename__ = "proxy_metric_pair"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    plan_id = db.Column(db.Integer, db.ForeignKey("plan.id"), nullable=False, comment="所属方案ID")
+    task_id_a = db.Column(db.Integer, db.ForeignKey("task.id"), nullable=False, comment="接收方任务（中间单位作为被考核单位收到）")
+    task_id_b = db.Column(db.Integer, db.ForeignKey("task.id"), nullable=False, comment="下发方任务（中间单位作为主考单位发出）")
+    middle_unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False, comment="中间单位ID")
+    similarity = db.Column(db.Float, default=0.0, comment="文本相似度")
+    confidence = db.Column(db.String(20), default="medium", comment="置信度 high/medium/low")
+    status = db.Column(db.String(20), default="pending", comment="pending/confirmed/resolved/ignored")
+    remark = db.Column(db.String(500), nullable=True, comment="人工备注")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    plan = db.relationship("Plan", backref="proxy_metric_pairs")
+    task_a = db.relationship("Task", foreign_keys=[task_id_a], backref="proxy_as_receiver")
+    task_b = db.relationship("Task", foreign_keys=[task_id_b], backref="proxy_as_assigner")
+    middle_unit = db.relationship("Unit", foreign_keys=[middle_unit_id])

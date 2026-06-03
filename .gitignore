@@ -30,6 +30,8 @@ Thumbs.db
 # Environment
 .env
 *.log
+logs/
+backups/
 
 # Secret keys (auto-generated on first run)
 .secret_key

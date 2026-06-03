@@ -2,6 +2,7 @@ import os
 import sys
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+ENV = os.environ.get("ASSESSMENT_ENV", "development")
 
 
 def _get_data_dir():
@@ -24,8 +25,14 @@ def _load_or_create_secret(filename):
 
 
 class Config:
+    ENV = ENV
+    DEBUG = ENV != "production"
     SECRET_KEY = os.environ.get("SECRET_KEY") or _load_or_create_secret(".secret_key")
     JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY") or _load_or_create_secret(".jwt_secret_key")
     JWT_ACCESS_TOKEN_EXPIRES = 86400
     SQLALCHEMY_DATABASE_URI = f"sqlite:///{os.path.join(_get_data_dir(), 'assessment.db')}"
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_ENGINE_OPTIONS = (
+        {"connect_args": {"check_same_thread": False}}
+        if ENV == "production" else {}
+    )

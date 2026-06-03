@@ -25,6 +25,7 @@ def list_orgs():
                     "name": o.name,
                     "parent_id": o.parent_id,
                     "sort_order": o.sort_order,
+                    "category": o.category or "",
                     "children": build_tree(o.id),
                 })
         return nodes
@@ -46,10 +47,10 @@ def create_org():
     if parent_id and not Organization.query.get(parent_id):
         return jsonify({"msg": "上级机构不存在"}), 400
 
-    org = Organization(name=name, parent_id=parent_id or None)
+    org = Organization(name=name, parent_id=parent_id or None, category=data.get("category", "").strip())
     db.session.add(org)
     db.session.commit()
-    return jsonify({"data": {"id": org.id, "name": org.name, "parent_id": org.parent_id}, "msg": "创建成功"})
+    return jsonify({"data": {"id": org.id, "name": org.name, "parent_id": org.parent_id, "category": org.category}, "msg": "创建成功"})
 
 
 @org_bp.route("/api/orgs/<int:org_id>", methods=["PUT"])
@@ -77,6 +78,8 @@ def update_org(org_id):
 
     org.name = name
     org.parent_id = parent_id or None
+    if "category" in data:
+        org.category = data["category"].strip()
     db.session.commit()
     return jsonify({"msg": "编辑成功"})
 

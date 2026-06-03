@@ -2,19 +2,34 @@ import os
 import sys
 import logging
 from flask import Flask, send_from_directory, request, jsonify
+from flask_compress import Compress
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token
 from config import Config
 from models import db
 
 # 日志配置
+import logging.handlers
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
+
+if os.environ.get("ASSESSMENT_ENV") == "production":
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    file_handler = logging.handlers.RotatingFileHandler(
+        os.path.join(log_dir, "assessment.log"),
+        maxBytes=10 * 1024 * 1024, backupCount=10, encoding="utf-8",
+    )
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logging.getLogger().addHandler(file_handler)
+    logger.info("Production file logging initialized")
 
 app = Flask(__name__, static_folder=None)
 app.config.from_object(Config)
 
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+Compress(app)
 jwt = JWTManager(app)
 db.init_app(app)
 
@@ -31,7 +46,9 @@ def _get_admin_user_id():
 
 @app.before_request
 def desktop_auto_auth():
-    """桌面版自动认证：无 token 时注入管理员身份"""
+    """桌面版自动认证：无 token 时注入管理员身份（生产环境禁用）"""
+    if os.environ.get("ASSESSMENT_ENV") == "production":
+        return
     if not request.path.startswith("/api/"):
         return
     if request.path == "/api/auth/login":
@@ -75,6 +92,13 @@ def log_request():
         logger.info(f"{request.method} {request.path}")
 
 @app.after_request
+def add_cache_headers(response):
+    # 静态资源（带内容哈希）可长期缓存
+    if request.path.startswith("/assets/"):
+        response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    return response
+
+@app.after_request
 def add_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
@@ -93,6 +117,7 @@ from routes.checklist import checklist_bp
 from routes.cadre import cadre_bp
 from routes.assessment_result import result_bp
 from routes.quality_check import qc_bp
+from routes.user_prefs import user_prefs_bp
 app.register_blueprint(auth_bp)
 app.register_blueprint(org_bp)
 app.register_blueprint(unit_bp)
@@ -105,6 +130,7 @@ app.register_blueprint(checklist_bp)
 app.register_blueprint(cadre_bp)
 app.register_blueprint(result_bp)
 app.register_blueprint(qc_bp)
+app.register_blueprint(user_prefs_bp)
 
 
 def _get_frontend_dir():
@@ -293,6 +319,152 @@ def _clean_task_orphans():
             conn.close()
 
 
+def _drop_old_checklist_tables():
+    """删除旧版清单管理表（checklist + checklist_unit），迁移至 checklist_item"""
+    import sqlite3
+    conn = sqlite3.connect(app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", ""))
+    try:
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        if "checklist" in tables or "checklist_unit" in tables:
+            old_count = conn.execute("SELECT COUNT(*) FROM checklist").fetchone()[0] if "checklist" in tables else 0
+            if old_count > 0:
+                print(f"[数据迁移] 检测到 {old_count} 条旧版清单数据，旧表将删除。建议先通过旧版接口导出数据。")
+            conn.execute("DROP TABLE IF EXISTS checklist_unit")
+            conn.execute("DROP TABLE IF EXISTS checklist")
+            conn.commit()
+            print("[数据迁移] 旧版清单表已删除")
+    except Exception as e:
+        print(f"[数据迁移] 删除旧表时出错: {e}")
+    finally:
+        conn.close()
+
+
+def _migrate_proxy_metrics():
+    """将 ConfirmedPattern 中的代理指标确认记录迁移到 ProxyMetricPair 表"""
+    import sqlite3
+    conn = sqlite3.connect(app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", ""))
+    try:
+        # 确保 proxy_metric_pair 表存在
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        if "proxy_metric_pair" not in tables:
+            return  # 表会在 db.create_all() 中创建
+        if "confirmed_pattern" not in tables:
+            return
+
+        # 查询旧确认记录
+        old_rows = conn.execute(
+            "SELECT id, plan_id, text_hash FROM confirmed_pattern WHERE issue_type = '疑似以指标考指标'"
+        ).fetchall()
+        if not old_rows:
+            return
+
+        migrated = 0
+        for row in old_rows:
+            cp_id, plan_id, text_hash = row
+            parts = text_hash.split(":")
+            if len(parts) != 2:
+                continue
+            try:
+                tid_a, tid_b = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+
+            # 确保 task_id_a < task_id_b（规范化存储）
+            if tid_a > tid_b:
+                tid_a, tid_b = tid_b, tid_a
+
+            # 检查 pair 是否已存在
+            existing = conn.execute(
+                "SELECT id FROM proxy_metric_pair WHERE plan_id = ? AND task_id_a = ? AND task_id_b = ?",
+                (plan_id, tid_a, tid_b),
+            ).fetchone()
+            if existing:
+                continue
+
+            # 查找 middle_unit_id：task_id_a 的被考核单位（即中间单位）
+            task_info = conn.execute(
+                "SELECT unit_id FROM task WHERE id = ?", (tid_a,)
+            ).fetchone()
+            middle_unit_id = task_info[0] if task_info else None
+
+            conn.execute(
+                """INSERT INTO proxy_metric_pair
+                   (plan_id, task_id_a, task_id_b, middle_unit_id, similarity, confidence, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 0.0, 'medium', 'confirmed', datetime('now'), datetime('now'))""",
+                (plan_id, tid_a, tid_b, middle_unit_id),
+            )
+            migrated += 1
+
+        if migrated > 0:
+            conn.execute(
+                "DELETE FROM confirmed_pattern WHERE issue_type = '疑似以指标考指标'"
+            )
+            conn.commit()
+            print(f"[数据迁移] 已迁移 {migrated} 条代理指标确认记录到 proxy_metric_pair 表")
+    except Exception as e:
+        print(f"[数据迁移] 代理指标迁移出错: {e}")
+    finally:
+        conn.close()
+
+
+def _backfill_org_category():
+    """为已有组织自动推断类别：乡镇街道根节点及其子孙 → street，其余 → dept"""
+    from models import Organization
+    import sqlite3
+    conn = sqlite3.connect(app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", ""))
+    try:
+        uncategorized = conn.execute(
+            "SELECT COUNT(*) FROM organization WHERE category IS NULL OR category = ''"
+        ).fetchone()[0]
+        if uncategorized == 0:
+            return
+        # 找到"乡镇街道"根节点
+        street_root = conn.execute(
+            "SELECT id FROM organization WHERE name = '乡镇街道' AND (category IS NULL OR category = '') LIMIT 1"
+        ).fetchone()
+        if street_root:
+            # 递归收集所有子孙
+            descendants = set()
+            stack = [street_root[0]]
+            while stack:
+                pid = stack.pop()
+                children = conn.execute(
+                    "SELECT id FROM organization WHERE parent_id = ?", (pid,)
+                ).fetchall()
+                for c in children:
+                    cid = c[0]
+                    if cid not in descendants:
+                        descendants.add(cid)
+                        stack.append(cid)
+            all_street_ids = [street_root[0]] + list(descendants)
+            placeholders = ",".join("?" for _ in all_street_ids)
+            conn.execute(
+                f"UPDATE organization SET category = 'street' WHERE id IN ({placeholders})",
+                all_street_ids,
+            )
+            conn.execute(
+                "UPDATE organization SET category = 'dept' WHERE (category IS NULL OR category = '')"
+            )
+        else:
+            # 没有"乡镇街道"根节点，根据名称推断
+            conn.execute(
+                "UPDATE organization SET category = 'street' WHERE name LIKE '%镇%' OR name LIKE '%乡%' OR name LIKE '%街道%'"
+            )
+            conn.execute(
+                "UPDATE organization SET category = 'dept' WHERE (category IS NULL OR category = '')"
+            )
+        conn.commit()
+        done = conn.execute(
+            "SELECT COUNT(*) FROM organization WHERE category IS NULL OR category = ''"
+        ).fetchone()[0]
+        if done == 0:
+            print("[回填完成] organization.category 已全部设置")
+        else:
+            print(f"[回填警告] 仍有 {done} 条机构未设置category")
+    finally:
+        conn.close()
+
+
 def _seed_default_admin():
     """首次运行时创建默认管理员"""
     from models import Organization, Unit, User, Role
@@ -350,6 +522,9 @@ def _create_indexes():
             "CREATE INDEX IF NOT EXISTS idx_task_score_task_id ON task_score(task_id)",
             "CREATE INDEX IF NOT EXISTS idx_assessment_result_cadre_id ON assessment_result(cadre_id)",
             "CREATE INDEX IF NOT EXISTS idx_assessment_result_plan_year ON assessment_result(plan_year)",
+            "CREATE INDEX IF NOT EXISTS idx_proxy_metric_pair_plan_id ON proxy_metric_pair(plan_id)",
+            "CREATE INDEX IF NOT EXISTS idx_proxy_metric_pair_status ON proxy_metric_pair(status)",
+            "CREATE INDEX IF NOT EXISTS idx_proxy_metric_pair_middle_unit ON proxy_metric_pair(middle_unit_id)",
         ]
         for sql in indexes:
             conn.execute(sql)
@@ -364,9 +539,13 @@ def init_db():
     with app.app_context():
         db.create_all()
         _migrate_add_column("evaluation_dimension", "is_bonus_deduction", "BOOLEAN", "0")
+        _migrate_add_column("organization", "category", "VARCHAR(20)", "''")
+        _drop_old_checklist_tables()
         _migrate_nullable_columns()
         _create_indexes()
+        _migrate_proxy_metrics()
         _backfill_bonus_deduction()
+        _backfill_org_category()
         _clean_task_orphans()
         _seed_default_admin()
 
@@ -378,15 +557,32 @@ if __name__ == "__main__":
     init_db()
 
     is_frozen = getattr(sys, 'frozen', False)
-    port = 5000
+    is_production = os.environ.get("ASSESSMENT_ENV") == "production"
+    port = int(os.environ.get("PORT", "8080" if is_production else "5000"))
+
+    # 生产环境启用 SQLite WAL 模式，提升并发性能
+    if is_production:
+        import sqlite3
+        db_path = app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", "")
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.close()
+        logger.info("SQLite WAL mode enabled")
 
     print("=" * 50)
-    print("黔江区多维度精准考核评价系统 v1.1")
+    print("黔江区多维度精准考核评价系统")
+    print(f"环境: {'生产' if is_production else '开发'}")
     print(f"访问地址: http://localhost:{port}")
     print("=" * 50)
 
     if is_frozen:
-        # 打包后自动打开浏览器
         threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
 
-    app.run(host="0.0.0.0", port=port, debug=not is_frozen)
+    if is_production:
+        from waitress import serve
+        logger.info(f"Production server (waitress) starting on 0.0.0.0:{port}")
+        print(f"生产服务器启动中 (waitress, 端口 {port})...")
+        serve(app, host="0.0.0.0", port=port, threads=4, channel_timeout=120)
+    else:
+        app.run(host="0.0.0.0", port=port, debug=True)

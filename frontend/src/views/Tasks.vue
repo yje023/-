@@ -4,13 +4,6 @@
       <el-select v-model="filterPlanId" placeholder="筛选方案" clearable @change="onFilterChange" style="width:200px">
         <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
       </el-select>
-      <el-select v-model="chipCategory" placeholder="选择筛选维度" clearable @change="onChipCategoryChange" @clear="clearChipFilter" style="width:150px">
-        <el-option label="考核维度" value="dimension" />
-        <el-option label="重点工作" value="key_work" />
-        <el-option label="评价部门" value="assessor" />
-        <el-option label="被考核单位" value="unit" />
-        <el-option label="晾晒周期" value="period" />
-      </el-select>
       <el-select v-model="filterStatus" placeholder="筛选状态" clearable @change="onFilterChange" style="width:140px">
         <el-option label="待填报" value="pending" />
         <el-option label="已提交" value="submitted" />
@@ -18,21 +11,34 @@
       </el-select>
       <el-input v-model="searchKey" placeholder="搜索..." clearable @clear="onSearch" @keyup.enter="onSearch" style="width:160px" />
       <el-button type="primary" @click="onSearch">搜索</el-button>
-      <el-button v-if="chipCategory && chipSelected.length" @click="clearChipFilter">清除</el-button>
+      <el-button v-if="activeFilterCount" @click="clearChipFilter">清除筛选({{ activeFilterCount }})</el-button>
     </div>
 
-    <!-- 方片筛选区 -->
-    <div v-if="chipCategory && chipOptions.length" class="chip-filter-area">
-      <div class="chip-summary" v-if="chipSummary">{{ chipSummary }}</div>
-      <div class="chip-grid">
-        <div
-          v-for="item in chipOptions" :key="item.id || item"
-          :class="['chip-item', { active: isChipSelected(item), disabled: item.active === false }]"
-          @click="item.active !== false && toggleChip(item)"
-        >
-          {{ item.name || item }}
+    <!-- 多维度方片筛选区 -->
+    <div class="chip-filter-area">
+      <div v-if="!filterPlanId" style="text-align:center;color:#909399;padding:8px">请先选择一个考核方案查看维度筛选</div>
+      <template v-else>
+      <div v-for="dim in chipDimensions" :key="dim.key" class="chip-dim-row">
+        <span class="chip-dim-label">{{ dim.label }}</span>
+        <div :ref="el => setChipGridRef(dim.key, el)" :class="['chip-grid', { collapsed: dim.collapsed }]">
+          <span class="chip-toggle" @click="dim.collapsed = !dim.collapsed">{{ dim.collapsed ? '▼' : '▲' }}</span>
+          <span v-if="!dim.options.length" class="chip-empty">暂无数据</span>
+          <template v-for="(item, ci) in dim.options" :key="item.id || item">
+            <div
+              :class="['chip-item', { active: isChipSelected(dim.key, item), disabled: item.active === false && !isChipSelected(dim.key, item) }]"
+              draggable="true"
+              @dragstart="onChipDragStart($event, dim.key, ci)"
+              @dragover.prevent="onChipDragOver($event, dim.key, ci)"
+              @dragenter.prevent="onChipDragEnter($event, dim.key, ci)"
+              @dragleave="onChipDragLeave($event)"
+              @drop="onChipDrop($event, dim.key, ci)"
+              @dragend="onChipDragEnd($event)"
+              @click="item.active !== false && toggleChip(dim.key, item)"
+            >{{ item.name || item }}</div>
+          </template>
         </div>
       </div>
+      </template>
     </div>
 
     <div class="search-bar">
@@ -206,12 +212,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../store/auth'
 import * as api from '../api/task'
 import { getPlans, getPlan } from '../api/plan'
 import { getUnits } from '../api/unit'
+import { getChipSortOrder, saveChipSortOrder } from '../api/user'
 
 const auth = useAuthStore()
 const plans = ref([])
@@ -228,58 +235,124 @@ const filterPlanId = ref(null)
 const filterStatus = ref('')
 const selectedRows = ref([])
 
-// 方片筛选
-const chipCategory = ref('')
-const chipOptions = ref([])
-const chipSelected = ref([])
-const chipSummary = ref('')  // 如 "1/11"
+// 多维度方片筛选
 const filterOpts = ref({ dimensions: [], key_works: [], assessor_units: [], assessed_units: [], review_periods: [] })
+const chipDimensions = reactive([
+  { key: 'dimension', label: '考核维度', options: [], selected: [], collapsed: true },
+  { key: 'key_work', label: '重点工作', options: [], selected: [], collapsed: true },
+  { key: 'assessor', label: '主考单位', options: [], selected: [], collapsed: true },
+  { key: 'unit', label: '被考核单位', options: [], selected: [], collapsed: true },
+  { key: 'period', label: '晾晒周期', options: [], selected: [], collapsed: true },
+])
+const activeFilterCount = computed(() => chipDimensions.reduce((s, d) => s + d.selected.length, 0))
 
-function onSelectionChange(rows) { selectedRows.value = rows }
-function onSearch() { currentPage.value = 1; loadTasks() }
-function onFilterChange() { currentPage.value = 1; chipCategory.value = ''; chipOptions.value = []; chipSelected.value = []; chipSummary.value = ''; loadFilterOpts(); loadTasks() }
-
-function onChipCategoryChange() {
-  chipSelected.value = []; chipSummary.value = ''
-  const opts = filterOpts.value
-  if (chipCategory.value === 'dimension' || chipCategory.value === 'assessor') {
-    // 合并预设 + 已有任务数据
-    const isDim = chipCategory.value === 'dimension'
-    const preset = isDim ? (availableDims.value || []) : (assessorUnits.value || [])
-    const active = isDim ? (opts.dimensions || []) : (opts.assessor_units || [])
-    const activeIds = new Set(active.map(a => a.id))
-    chipOptions.value = preset.map(p => ({
-      ...p,
-      active: activeIds.has(p.id),
-    }))
-    chipSummary.value = `${active.length}/${preset.length}`
-  } else if (chipCategory.value === 'key_work') {
-    chipOptions.value = (opts.key_works || []).map(k => ({ id: k, name: k, active: true }))
-    chipSummary.value = `${opts.key_works?.length || 0} 项`
-  } else if (chipCategory.value === 'unit') {
-    chipOptions.value = (opts.assessed_units || []).map(u => ({ ...u, active: true }))
-    chipSummary.value = `${opts.assessed_units?.length || 0} 个`
-  } else if (chipCategory.value === 'period') {
-    chipOptions.value = (opts.review_periods || []).map(p => ({ ...p, active: true }))
-    chipSummary.value = `${opts.review_periods?.length || 0} 种`
-  } else {
-    chipOptions.value = []
+const chipGridRefs = {}
+function setChipGridRef(key, el) { if (el) chipGridRefs[key] = el }
+function checkChipOverflow() {
+  for (const dim of chipDimensions) {
+    if (dim.options.length > 6) dim.collapsed = true; else dim.collapsed = false
   }
 }
 
-function isChipSelected(item) {
-  const id = item.id || item
-  return chipSelected.value.some(s => (s.id || s) === id)
+// ===== 芯片拖拽排序 =====
+const dragState = reactive({ sourceDimKey: null, sourceIndex: -1 })
+const chipPageId = 'tasks'
+
+function onChipDragStart(e, dimKey, index) {
+  dragState.sourceDimKey = dimKey
+  dragState.sourceIndex = index
+  e.dataTransfer.effectAllowed = 'move'
+  e.dataTransfer.setData('text/plain', `${dimKey}:${index}`)
+  setTimeout(() => e.target.classList.add('dragging'), 0)
+}
+function onChipDragOver(e, dimKey, index) { e.dataTransfer.dropEffect = 'move' }
+function onChipDragEnter(e, dimKey, index) {
+  if (dimKey !== dragState.sourceDimKey) return
+  e.target.classList.add('drag-over')
+}
+function onChipDragLeave(e) { e.target.classList.remove('drag-over') }
+function onChipDrop(e, dimKey, index) {
+  e.target.classList.remove('drag-over')
+  if (dimKey !== dragState.sourceDimKey) return
+  if (dragState.sourceIndex === index) return
+  const dim = chipDimensions.find(d => d.key === dimKey)
+  if (!dim) return
+  const [removed] = dim.options.splice(dragState.sourceIndex, 1)
+  dim.options.splice(index, 0, removed)
+  const sortOrder = dim.options.map(o => String(o.id || o))
+  saveChipSortOrder(chipPageId, dimKey, sortOrder).catch(() => {})
+  dragState.sourceDimKey = null; dragState.sourceIndex = -1
+}
+function onChipDragEnd(e) {
+  e.target.classList.remove('dragging')
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'))
 }
 
-function toggleChip(item) {
-  const id = item.id || item
-  const idx = chipSelected.value.findIndex(s => (s.id || s) === id)
-  if (idx >= 0) chipSelected.value.splice(idx, 1)
-  else chipSelected.value.push(item)
+// 排序持久化
+let savedSortOrders = {}
+async function loadChipSortOrders() {
+  try {
+    const res = await getChipSortOrder(chipPageId)
+    savedSortOrders = res.data || res || {}
+  } catch { savedSortOrders = {} }
+}
+function applySortOrders() {
+  for (const dim of chipDimensions) {
+    const order = savedSortOrders[dim.key]
+    if (order && order.length) {
+      const orderMap = new Map(order.map((id, i) => [String(id), i]))
+      dim.options.sort((a, b) => {
+        const aOrder = orderMap.get(String(a.id || a))
+        const bOrder = orderMap.get(String(b.id || b))
+        if (aOrder !== undefined && bOrder !== undefined) return aOrder - bOrder
+        if (aOrder !== undefined) return -1
+        if (bOrder !== undefined) return 1
+        return 0
+      })
+    }
+  }
 }
 
-function clearChipFilter() { chipSelected.value = []; currentPage.value = 1; loadTasks() }
+function buildChipOptions() {
+  const opts = filterOpts.value
+  const presetDims = availableDims.value || []
+  const presetAssessors = assessorUnits.value || []
+  // 维度 + 主考单位：合并预设 + API 返回的 active 状态（API 返回全量选项）
+  const activeDimMap = {}; for (const d of (opts.dimensions || [])) { activeDimMap[d.id] = d.active !== false }
+  const activeAssessorMap = {}; for (const a of (opts.assessor_units || [])) { activeAssessorMap[a.id] = a.active !== false }
+  chipDimensions[0].options = presetDims.map(p => ({ ...p, active: p.id in activeDimMap ? activeDimMap[p.id] : false }))
+  chipDimensions[2].options = presetAssessors.map(p => ({ ...p, active: p.id in activeAssessorMap ? activeAssessorMap[p.id] : false }))
+  // 重点工作、被考核单位、晾晒周期：直接使用 API 返回（已含全量选项+active）
+  chipDimensions[1].options = (opts.key_works || []).map(k => typeof k === 'string' ? { id: k, name: k, active: true } : { id: k.id || k, name: k.name || k, active: k.active !== false })
+  chipDimensions[3].options = (opts.assessed_units || []).map(u => ({ ...u, active: u.active !== false }))
+  chipDimensions[4].options = (opts.review_periods || []).map(p => ({ ...p, active: p.active !== false }))
+  checkChipOverflow()
+  applySortOrders()
+}
+
+function isChipSelected(dimKey, item) {
+  const dim = chipDimensions.find(d => d.key === dimKey)
+  if (!dim) return false
+  const id = item.id || item
+  return dim.selected.some(s => (s.id || s) === id)
+}
+
+function toggleChip(dimKey, item) {
+  const dim = chipDimensions.find(d => d.key === dimKey)
+  if (!dim) return
+  const id = item.id || item
+  const idx = dim.selected.findIndex(s => (s.id || s) === id)
+  if (idx >= 0) dim.selected.splice(idx, 1)
+  else dim.selected.push(item)
+  currentPage.value = 1; loadTasks(); loadFilterOpts()
+}
+
+function clearChipFilter() { chipDimensions.forEach(d => d.selected = []); currentPage.value = 1; loadFilterOpts(); loadTasks() }
+
+function onSelectionChange(rows) { selectedRows.value = rows }
+function onSearch() { currentPage.value = 1; loadTasks() }
+function onFilterChange() { currentPage.value = 1; clearAllChips(); loadFilterOpts(); loadTasks() }
+function clearAllChips() { chipDimensions.forEach(d => d.selected = []) }
 
 function escapeHtml(text) {
   const div = document.createElement('div')
@@ -317,32 +390,50 @@ async function loadTasks() {
   if (searchKey.value) { params.search = searchKey.value; params.search_type = 'all' }
   if (filterPlanId.value) params.plan_id = filterPlanId.value
   if (filterStatus.value) params.status = filterStatus.value
-  if (chipSelected.value.length) {
-    if (chipCategory.value === 'dimension') params.dimension_ids = chipSelected.value.map(c => c.id).join(',')
-    else if (chipCategory.value === 'key_work') params.key_works = chipSelected.value.map(c => c.name || c).join(',')
-    else if (chipCategory.value === 'assessor') params.assessor_unit_id = chipSelected.value.map(c => c.id).join(',')
-    else if (chipCategory.value === 'unit') params.unit_id = chipSelected.value.map(c => c.id).join(',')
-    else if (chipCategory.value === 'period') params.period = chipSelected.value.map(c => c.id).join(',')
+  for (const dim of chipDimensions) {
+    if (dim.selected.length) {
+      if (dim.key === 'dimension') params.dimension_ids = dim.selected.map(c => c.id).join(',')
+      else if (dim.key === 'key_work') params.key_works = dim.selected.map(c => c.name || c).join(',')
+      else if (dim.key === 'assessor') params.assessor_unit_id = dim.selected.map(c => c.id).join(',')
+      else if (dim.key === 'unit') params.unit_id = dim.selected.map(c => c.id).join(',')
+      else if (dim.key === 'period') params.period = dim.selected.map(c => c.id).join(',')
+    }
   }
   try {
     const r = await api.getTasks(params)
-    if (r.data?.items) {
-      tasks.value = r.data.items
-      total.value = r.data.total
-    } else {
-      tasks.value = r.data || []
-      total.value = tasks.value.length
-    }
+    if (r.data?.items) { tasks.value = r.data.items; total.value = r.data.total }
+    else { tasks.value = r.data || []; total.value = tasks.value.length }
   } catch {}
 }
 
+let filterLoadId = 0
 async function loadFilterOpts() {
-  if (!filterPlanId.value) { filterOpts.value = { dimensions: [], key_works: [], assessor_units: [], assessed_units: [] }; return }
+  if (!filterPlanId.value) {
+    filterOpts.value = { dimensions: [], key_works: [], assessor_units: [], assessed_units: [], review_periods: [] }
+    chipDimensions.forEach(d => d.options = [])
+    return
+  }
+  const thisId = ++filterLoadId
   try {
-    const r = await api.getTaskFilterOptions(filterPlanId.value)
+    const currentFilters = {}
+    for (const dim of chipDimensions) {
+      if (dim.selected.length) {
+        currentFilters[dim.key] = dim.selected.map(c => c.id || c)
+      }
+    }
+    const r = await api.getTaskFilterOptions(filterPlanId.value, currentFilters)
+    if (thisId !== filterLoadId) return  // 竞态：后续调用已覆盖
     filterOpts.value = r.data?.data || r.data || filterOpts.value
-  } catch { filterOpts.value = { dimensions: [], key_works: [], assessor_units: [], assessed_units: [] } }
+  } catch {
+    if (thisId !== filterLoadId) return  // 竞态：后续调用已覆盖
+    filterOpts.value = { dimensions: [], key_works: [], assessor_units: [], assessed_units: [], review_periods: [] }
+  }
 }
+
+// 当 filterOpts、availableDims、assessorUnits 就绪后构建芯片
+watch([filterOpts, availableDims, assessorUnits], () => {
+  if (filterPlanId.value) buildChipOptions()
+})
 
 watch(filterPlanId, async (pid) => {
   if (pid) {
@@ -493,12 +584,14 @@ function buildExportParams() {
   if (filterPlanId.value) params.plan_id = filterPlanId.value
   if (searchKey.value) { params.search = searchKey.value; params.search_type = 'all' }
   if (filterStatus.value) params.status = filterStatus.value
-  if (chipSelected.value.length) {
-    if (chipCategory.value === 'dimension') params.dimension_ids = chipSelected.value.map(c => c.id).join(',')
-    else if (chipCategory.value === 'key_work') params.key_works = chipSelected.value.map(c => c.name || c).join(',')
-    else if (chipCategory.value === 'assessor') params.assessor_unit_id = chipSelected.value.map(c => c.id).join(',')
-    else if (chipCategory.value === 'unit') params.unit_id = chipSelected.value.map(c => c.id).join(',')
-    else if (chipCategory.value === 'period') params.period = chipSelected.value.map(c => c.id).join(',')
+  for (const dim of chipDimensions) {
+    if (dim.selected.length) {
+      if (dim.key === 'dimension') params.dimension_ids = dim.selected.map(c => c.id).join(',')
+      else if (dim.key === 'key_work') params.key_works = dim.selected.map(c => c.name || c).join(',')
+      else if (dim.key === 'assessor') params.assessor_unit_id = dim.selected.map(c => c.id).join(',')
+      else if (dim.key === 'unit') params.unit_id = dim.selected.map(c => c.id).join(',')
+      else if (dim.key === 'period') params.period = dim.selected.map(c => c.id).join(',')
+    }
   }
   return params
 }
@@ -521,17 +614,25 @@ async function handleExportMenu(cmd) {
   try { const r = await api[fn](params); downloadBlob(r, filename) } catch {}
 }
 
-onMounted(async () => { await loadPlansData(); await loadFilterOpts(); loadAllUnits(); loadTasks() })
+onMounted(async () => { await loadChipSortOrders(); await loadPlansData(); loadAllUnits(); loadTasks() })
 </script>
 
 <style scoped>
 .chip-filter-area { margin-bottom: 14px; padding: 12px; background: #f5f7fa; border-radius: 8px; border: 1px solid #e4e7ed; }
-.chip-grid { display: flex; flex-wrap: wrap; gap: 8px; max-height: 200px; overflow-y: auto; }
-.chip-item { display: inline-block; padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; background: #fff; border: 1px solid #dcdfe6; color: #606266; transition: all 0.2s; user-select: none; white-space: nowrap; }
+.chip-grid { display: inline-flex; flex-wrap: wrap; gap: 8px; max-height: 120px; overflow-y: auto; max-width: calc(100% - 88px); transition: max-height 0.25s; }
+.chip-grid.collapsed { max-height: 30px; overflow-y: hidden; }
+.chip-toggle { display: inline-block; padding: 4px 8px; border-radius: 6px; font-size: 11px; cursor: pointer; color: #909399; background: #f0f2f5; border: 1px dashed #dcdfe6; user-select: none; white-space: nowrap; transition: all 0.2s; }
+.chip-toggle:hover { color: #409eff; border-color: #409eff; background: #ecf5ff; }
+.chip-dim-row { margin-bottom: 8px; }
+.chip-dim-row:last-child { margin-bottom: 0; }
+.chip-dim-label { display: inline-block; font-size: 12px; font-weight: 600; color: #606266; min-width: 80px; vertical-align: top; padding-top: 7px; }
+.chip-item { display: inline-block; padding: 4px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; background: #fff; border: 1px solid #dcdfe6; color: #606266; transition: all 0.2s; user-select: none; white-space: nowrap; }
 .chip-item:hover { border-color: #409eff; color: #409eff; }
 .chip-item.active { background: #409eff; color: #fff; border-color: #409eff; }
 .chip-item.disabled { color: #f56c6c; border-color: #fbc4c4; background: #fef0f0; cursor: not-allowed; }
 .chip-item.disabled:hover { border-color: #fbc4c4; color: #f56c6c; }
-.chip-summary { font-size: 12px; color: #909399; margin-bottom: 8px; }
+.chip-item.dragging { opacity: 0.4; }
+.chip-item.drag-over { border-color: #409eff; background: #ecf5ff; transform: scale(1.05); }
+.chip-empty { font-size: 12px; color: #c0c4cc; padding: 4px 0; }
 .cell-wrap { white-space: pre-wrap; word-break: break-all; }
 </style>

@@ -2,7 +2,7 @@ import io, re, zipfile
 from flask import Blueprint, request, jsonify, send_file
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy.orm import joinedload
-from models import db, Task, TaskSubmission, TaskScore, Plan, AssessmentDimension, Unit, User
+from models import db, Task, TaskSubmission, TaskScore, Plan, AssessmentDimension, Unit, User, QualityIssue, ConfirmedPattern, ProxyMetricPair
 from utils.xlsx_handler import export_xlsx, export_gov_xlsx, read_workbook, fuzzy_match_headers, HEADER_KEYWORDS
 from services.task_query import build_task_query
 
@@ -49,70 +49,130 @@ def list_tasks():
 @task_bp.route("/api/tasks/filter-options", methods=["GET"])
 @jwt_required()
 def filter_options():
-    """返回当前方案下可筛选的维度、重点工作、评价部门、被考核单位"""
+    """返回当前方案下可筛选的维度、重点工作、评价部门、被考核单位，支持级联禁用"""
+    import json as _json
     user = _get_user(int(get_jwt_identity()))
     plan_id = request.args.get("plan_id", type=int)
+    current_filters_str = request.args.get("current_filters", "{}")
 
-    q = Task.query
+    try:
+        current_filters = _json.loads(current_filters_str)
+    except (_json.JSONDecodeError, TypeError):
+        current_filters = {}
+
+    # 基础查询
+    base_q = Task.query
     if plan_id:
-        q = q.filter(Task.plan_id == plan_id)
+        base_q = base_q.filter(Task.plan_id == plan_id)
 
-    # 权限过滤
     is_publisher = user and user.role and user.role.is_system
     if not is_publisher:
         if user and user.current_identity == "assessed":
-            q = q.filter(Task.unit_id == user.unit_id)
+            base_q = base_q.filter(Task.unit_id == user.unit_id)
         elif user and user.current_identity == "assessor":
-            q = q.filter(Task.assessor_unit_id == user.unit_id)
+            base_q = base_q.filter(Task.assessor_unit_id == user.unit_id)
 
-    # 获取该查询条件下涉及的所有 task id
-    task_ids = [t[0] for t in q.with_entities(Task.id).all()]
-    if not task_ids:
-        return jsonify({"data": {"dimensions": [], "key_works": [], "assessor_units": [], "assessed_units": []}})
+    # 获取基础 task ids（用于后续查询）
+    base_task_ids = [t[0] for t in base_q.with_entities(Task.id).all()]
+    if not base_task_ids:
+        return jsonify({"data": {"dimensions": [], "key_works": [], "assessor_units": [], "assessed_units": [], "review_periods": []}})
 
-    # 考核维度选项：从这些 task 中提取不重复的维度
+    def _safe_int_list(values):
+        """安全地将字符串列表转为整数列表"""
+        result = []
+        for v in values:
+            try: result.append(int(v))
+            except (ValueError, TypeError): pass
+        return result
+
+    def _filtered_task_ids(exclude_dim):
+        """返回排除某个维度筛选后的 task id 集合"""
+        ids = set(base_task_ids)
+        filters = {k: v for k, v in current_filters.items() if k != exclude_dim and v}
+        if not filters:
+            return ids
+
+        q = base_q
+        if filters.get("dimension"):
+            dim_ids = _safe_int_list(filters["dimension"])
+            if dim_ids: q = q.filter(Task.assessment_dimension_id.in_(dim_ids))
+        if filters.get("key_work"):
+            q = q.filter(Task.key_work.in_(filters["key_work"]))
+        if filters.get("assessor"):
+            a_ids = _safe_int_list(filters["assessor"])
+            if a_ids: q = q.filter(Task.assessor_unit_id.in_(a_ids))
+        if filters.get("unit"):
+            u_ids = _safe_int_list(filters["unit"])
+            if u_ids: q = q.filter(Task.unit_id.in_(u_ids))
+        if filters.get("period"):
+            q = q.filter(Task.review_period.in_(filters["period"]))
+        return set(t[0] for t in q.with_entities(Task.id).all())
+
+    def _batch_counts(tid_set, column):
+        """批量计数：对 tid_set 按指定列 GROUP BY，一次查询返回 {value: count}"""
+        if not tid_set:
+            return {}
+        rows = (
+            db.session.query(column, db.func.count(Task.id))
+            .filter(Task.id.in_(list(tid_set)))
+            .group_by(column).all()
+        )
+        return {r[0]: r[1] for r in rows if r[0] is not None}
+
+    PERIOD_LABELS = {"月度": "月度", "季度": "季度", "半年度": "半年度", "年度": "年度"}
+
+    # 所有维度查询：ALL = 从全部任务取去重值（base_task_ids），ACTIVE = 从筛选后任务计数（filtered_task_ids）
+    # 这样零匹配选项仍会出现在列表中（前端可显示为红色），不会消失
+
+    # 考核维度：从全部任务取去重
+    all_dim_tids = base_task_ids
+    dim_tids = _filtered_task_ids("dimension")
     dims = (
         db.session.query(AssessmentDimension.id, AssessmentDimension.name)
         .join(Task, Task.assessment_dimension_id == AssessmentDimension.id)
-        .filter(Task.id.in_(task_ids))
+        .filter(Task.id.in_(list(all_dim_tids)) if all_dim_tids else False)
         .distinct().order_by(AssessmentDimension.name).all()
     )
-    dimensions = [{"id": d[0], "name": d[1]} for d in dims]
+    dim_counts = _batch_counts(dim_tids, Task.assessment_dimension_id)
+    # active: 在当前筛选下 count > 0
+    dimensions = [{"id": d[0], "name": d[1], "active": dim_counts.get(d[0], 0) > 0, "count": dim_counts.get(d[0], 0)} for d in dims]
 
-    # 重点工作选项
-    kws = (
+    # 重点工作：从全部任务取去重
+    kw_tids = _filtered_task_ids("key_work")
+    all_kws = (
         db.session.query(Task.key_work)
-        .filter(Task.id.in_(task_ids), Task.key_work.isnot(None), Task.key_work != "")
+        .filter(Task.id.in_(list(base_task_ids)), Task.key_work.isnot(None), Task.key_work != "")
         .distinct().order_by(Task.key_work).all()
     )
-    key_works = [k[0] for k in kws if k[0]]
+    kw_counts = _batch_counts(kw_tids, Task.key_work)
+    key_works = [{"id": k[0], "name": k[0], "active": kw_counts.get(k[0], 0) > 0, "count": kw_counts.get(k[0], 0)} for k in all_kws if k[0]]
 
-    # 评价部门选项
-    assessors = (
+    # 评价部门：从全部任务取去重
+    assessor_tids = _filtered_task_ids("assessor")
+    all_assessors = (
         db.session.query(Unit.id, Unit.name)
         .join(Task, Task.assessor_unit_id == Unit.id)
-        .filter(Task.id.in_(task_ids))
+        .filter(Task.id.in_(list(base_task_ids)))
         .distinct().order_by(Unit.name).all()
     )
-    assessor_units = [{"id": a[0], "name": a[1]} for a in assessors]
+    assessor_counts = _batch_counts(assessor_tids, Task.assessor_unit_id)
+    assessor_units = [{"id": a[0], "name": a[1], "active": assessor_counts.get(a[0], 0) > 0, "count": assessor_counts.get(a[0], 0)} for a in all_assessors]
 
-    # 被考核单位选项
-    assessed = (
+    # 被考核单位：从全部任务取去重
+    unit_tids = _filtered_task_ids("unit")
+    all_units = (
         db.session.query(Unit.id, Unit.name)
         .join(Task, Task.unit_id == Unit.id)
-        .filter(Task.id.in_(task_ids))
+        .filter(Task.id.in_(list(base_task_ids)))
         .distinct().order_by(Unit.name).all()
     )
-    assessed_units = [{"id": u[0], "name": u[1]} for u in assessed]
+    unit_counts = _batch_counts(unit_tids, Task.unit_id)
+    assessed_units = [{"id": u[0], "name": u[1], "active": unit_counts.get(u[0], 0) > 0, "count": unit_counts.get(u[0], 0)} for u in all_units]
 
-    # 晾晒周期选项
-    periods = (
-        db.session.query(Task.review_period)
-        .filter(Task.id.in_(task_ids), Task.review_period.isnot(None), Task.review_period != "")
-        .distinct().all()
-    )
-    PERIOD_LABELS = {"monthly": "月度", "quarterly": "季度", "semiannual": "半年度", "annual": "年度"}
-    review_periods = [{"id": p[0], "name": PERIOD_LABELS.get(p[0], p[0])} for p in periods if p[0]]
+    # 晾晒周期：固定列表
+    period_tids = _filtered_task_ids("period")
+    period_counts = _batch_counts(period_tids, Task.review_period)
+    review_periods = [{"id": k, "name": v, "active": period_counts.get(k, 0) > 0, "count": period_counts.get(k, 0)} for k, v in PERIOD_LABELS.items()]
 
     return jsonify({"data": {
         "dimensions": dimensions,
@@ -218,7 +278,7 @@ def get_task(task_id):
 @task_bp.route("/api/tasks/batch-all", methods=["DELETE"])
 @jwt_required()
 def batch_delete_all_tasks():
-    """删除指定方案的全部考核任务"""
+    """删除指定方案的全部考核任务（含关联质量检查、确认模式、代理指标）"""
     plan_id = request.args.get("plan_id", type=int)
     q = Task.query
     if plan_id:
@@ -226,6 +286,24 @@ def batch_delete_all_tasks():
     count = q.count()
     if count == 0:
         return jsonify({"msg": "没有可删除的任务"}), 200
+
+    # 同步清理关联数据
+    task_ids = [t.id for t in q.all()]
+
+    # 清理代理指标对
+    if task_ids:
+        ProxyMetricPair.query.filter(
+            ProxyMetricPair.task_id_a.in_(task_ids) | ProxyMetricPair.task_id_b.in_(task_ids)
+        ).delete(synchronize_session=False)
+
+    # 清理确认模式（按方案）
+    if plan_id:
+        ConfirmedPattern.query.filter_by(plan_id=plan_id).delete(synchronize_session=False)
+
+    # 清理质量检查（cascade 会自动处理，此处作为兜底）
+    QualityIssue.query.filter(QualityIssue.task_id.in_(task_ids)).delete(synchronize_session=False)
+
+    # 删除任务（cascade 同时删除 submissions、scores、quality_issues）
     q.delete(synchronize_session=False)
     db.session.commit()
     return jsonify({"msg": f"成功删除 {count} 个任务", "data": {"deleted": count}})

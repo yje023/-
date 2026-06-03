@@ -44,6 +44,11 @@ def login():
     if not user or not user.check_password(password):
         return jsonify({"msg": "用户名或密码错误"}), 401
 
+    # 自动设置默认身份：管理员或主考单位角色 → assessor
+    if user.role and (user.role.is_system or user.role.name == "主考单位"):
+        user.current_identity = "assessor"
+        db.session.commit()
+
     access_token = create_access_token(identity=str(user.id))
     return jsonify({
         "access_token": access_token,
@@ -113,8 +118,8 @@ def change_password():
     if not user.check_password(old_pwd):
         return jsonify({"msg": "旧密码错误"}), 400
 
-    if len(new_pwd) < 6:
-        return jsonify({"msg": "新密码至少6位"}), 400
+    if not new_pwd:
+        return jsonify({"msg": "新密码不能为空"}), 400
 
     user.set_password(new_pwd)
     user.must_change_password = False

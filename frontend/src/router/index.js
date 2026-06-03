@@ -17,7 +17,7 @@ const routes = [
   {
     path: '/',
     component: () => import('../views/Layout.vue'),
-    redirect: '/dashboard',
+    redirect: '/tasks',
     children: [
       { path: 'dashboard', name: 'Dashboard', component: () => import('../views/Dashboard.vue'), meta: { title: '首页' } },
       // 系统后台管理
@@ -45,7 +45,7 @@ router.beforeEach((to, from, next) => {
   // 已登录用户访问登录页 → 跳转首页
   if (to.path === '/login') {
     if (token) {
-      next('/dashboard')
+      next('/tasks')
     } else {
       next()
     }

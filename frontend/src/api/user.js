@@ -15,3 +15,11 @@ export function deleteUser(id) {
 export function batchDeleteUsers(ids) {
   return http.post('/users/batch-delete', { ids })
 }
+
+// 芯片排序偏好
+export function getChipSortOrder(page) {
+  return http.get('/user/chip-sort-order', { params: { page } })
+}
+export function saveChipSortOrder(page, dimensionKey, sortOrder) {
+  return http.put('/user/chip-sort-order', { page, dimension_key: dimensionKey, sort_order: sortOrder })
+}

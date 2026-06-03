@@ -53,8 +53,6 @@ def create_user():
         return jsonify({"msg": "用户名不能为空"}), 400
     if not password:
         return jsonify({"msg": "密码不能为空"}), 400
-    if len(password) < 6:
-        return jsonify({"msg": "密码至少6位"}), 400
     if not unit_id:
         return jsonify({"msg": "请选择所属单位"}), 400
 
@@ -88,8 +86,8 @@ def update_user(user_id):
     user.username = username
     if data.get("password"):
         pwd = data["password"].strip()
-        if len(pwd) < 6:
-            return jsonify({"msg": "密码至少6位"}), 400
+        if not pwd:
+            return jsonify({"msg": "密码不能为空"}), 400
         user.set_password(pwd)
         user.password_text = pwd
         user.must_change_password = True
