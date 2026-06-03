@@ -404,6 +404,115 @@ def _should_skip_sheet(sname):
     return False
 
 
+def _levenshtein_distance(s1, s2):
+    """纯 Python 编辑距离计算（Levenshtein Distance）"""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr = [i + 1]
+        for j, c2 in enumerate(s2):
+            curr.append(min(
+                prev[j + 1] + 1,      # insertion
+                curr[j] + 1,          # deletion
+                prev[j] + (c1 != c2)  # substitution
+            ))
+        prev = curr
+    return prev[-1]
+
+
+def _fuzzy_match_name(name, candidates, get_name_fn, max_dist_ratio=0.5, max_dist_abs=3):
+    """三级回退匹配：精确匹配 → 子串包含 → 编辑距离
+    candidates: 可迭代的候选项列表
+    get_name_fn: 从候选项提取名称字符串的函数
+    返回: (matched_obj, confidence) 或 (None, None)
+    """
+    if not name or not candidates:
+        return None, None
+    name = _normalize_name(name)
+    candidate_list = list(candidates)
+
+    # 1) 精确匹配
+    for obj in candidate_list:
+        if _normalize_name(get_name_fn(obj)) == name:
+            return obj, "exact"
+
+    # 2) 子串包含 — 输入名是候选名的子串（简称匹配，如"区委办" in "区委办公室"）
+    substring_matches = [obj for obj in candidate_list if name in _normalize_name(get_name_fn(obj))]
+    if len(substring_matches) == 1:
+        return substring_matches[0], "substring"
+
+    # 2b) 反向子串 — 候选名是输入名的子串（如输入"区健康管理中心区卫生健康发展中心"，候选"区健康管理中心"）
+    reverse_matches = [obj for obj in candidate_list if _normalize_name(get_name_fn(obj)) in name and _normalize_name(get_name_fn(obj))]
+    if len(reverse_matches) == 1:
+        return reverse_matches[0], "substring"
+    elif len(reverse_matches) > 1:
+        # 多个候选都包含在输入中 → 取最长的（最精确）
+        reverse_matches.sort(key=lambda obj: len(_normalize_name(get_name_fn(obj))), reverse=True)
+        longest = reverse_matches[0]
+        second = reverse_matches[1] if len(reverse_matches) > 1 else None
+        if second and len(_normalize_name(get_name_fn(longest))) == len(_normalize_name(get_name_fn(second))):
+            pass  # 平局，不匹配，继续走编辑距离
+        else:
+            return longest, "substring"
+
+    # 3) 编辑距离（取最佳唯一匹配）
+    best_obj, best_dist = None, None
+    for obj in candidate_list:
+        dist = _levenshtein_distance(name, _normalize_name(get_name_fn(obj)))
+        max_allowed = min(int(len(name) * max_dist_ratio), max_dist_abs)
+        if dist <= max_allowed:
+            if best_dist is None or dist < best_dist:
+                best_obj, best_dist = obj, dist
+            elif dist == best_dist:
+                best_obj = None  # 平局，不匹配
+    if best_obj is not None:
+        return best_obj, "edit_distance"
+
+    return None, None
+
+
+def _find_unit_in_set_fuzzy(name, unit_dict):
+    """带模糊匹配的单位查找：精确→子串→编辑距离，返回 (unit, error, suggestion, suggestion_id)"""
+    name = _normalize_name(name)
+    # 先用原有逻辑
+    unit, err = _find_unit_in_set(name, unit_dict)
+    if unit:
+        return unit, None, None, None
+    # 再用编辑距离模糊匹配
+    candidates = list(unit_dict.values())
+    match, confidence = _fuzzy_match_name(name, candidates, lambda u: u.name)
+    if match:
+        return match, None, match.name, match.id
+    # 尝试分隔符拆分后逐个匹配
+    parts = _split_unit_names(name)
+    if len(parts) > 1:
+        matched_parts = []
+        for part in parts:
+            m, _ = _fuzzy_match_name(_normalize_name(part), candidates, lambda u: u.name)
+            if m:
+                matched_parts.append(m)
+        if len(matched_parts) == len(parts):
+            # 所有部分都匹配到了（但不能合成为一个 unit，这里只对单个 unit 做建议）
+            pass
+    return None, err, None, None
+
+
+def _find_dim_in_set_fuzzy(name, dim_dict):
+    """带模糊匹配的维度查找：精确→子串→编辑距离，返回 (dim, error, suggestion, suggestion_id)"""
+    name = _normalize_name(name)
+    dim, err = _find_dim_in_set(name, dim_dict)
+    if dim:
+        return dim, None, None, None
+    candidates = list(dim_dict.values())
+    match, confidence = _fuzzy_match_name(name, candidates, lambda d: d.name)
+    if match:
+        return match, None, match.name, match.id
+    return None, err, None, None
+
+
 def _normalize_name(name):
     """名称规范化：去除各类引号、空格等干扰字符"""
     if not name:
@@ -423,6 +532,20 @@ def _normalize_name(name):
             continue
         result.append(ch)
     return ''.join(result).strip()
+
+
+def _exact_match_name(name, candidates_dict):
+    """纯精确匹配：只做 normalize 后逐对比较，不降级到模糊匹配。
+    candidates_dict: {id: obj} 字典
+    返回: (obj, None) 或 (None, error_msg)"""
+    if not name:
+        return None, "名称为空"
+    nn = _normalize_name(name)
+    for obj in candidates_dict.values():
+        if _normalize_name(obj.name) == nn:
+            return obj, None
+    return None, f"「{name}」不在预设中，请检查名称是否完全正确"
+
 
 def _find_unit_in_set(name, unit_dict):
     """在方案预设单位集合中查找：精确匹配 → 模糊匹配降级"""
@@ -644,13 +767,658 @@ def _validate_import_rows(items, plan_id, plan_dims, plan_assessors, plan_assess
     return valid_tasks, row_errors
 
 
+def _validate_import_rows_fuzzy(items, plan_id, plan_dims, plan_assessors, plan_assessed_units, plan_assessed_groups):
+    """带模糊匹配的校验，返回丰富错误结构用于前端展示。
+    返回: (valid_tasks, row_errors)
+    valid_tasks: [(row_idx, item_dict, task_dict), ...]
+    row_errors: [(row_idx, item_dict, [error_dict]), ...]
+    error_dict: {field, type, message, suggestion, suggestion_id, auto_fixable}
+    """
+    valid_tasks = []
+    row_errors = []
+    CATEGORY_KEYWORDS = ["个街道", "个部门", "个乡镇", "个乡镇街道", "各单位", "部分中央", "中小学校", "人民团体", "中央在黔"]
+
+    FIELD_LABEL = {"unit": "被考核单位", "dimension": "维度", "assessor": "评价部门",
+                   "key_work": "重点工作", "main_task": "主要任务", "period": "晾晒周期"}
+
+    def _err(field, etype, message, suggestion=None, suggestion_id=None, auto_fixable=False):
+        return {"field": field, "type": etype, "message": message,
+                "suggestion": suggestion, "suggestion_id": suggestion_id,
+                "auto_fixable": auto_fixable}
+
+    for i, item in enumerate(items, 2):
+        unit_name = item.get("unit", "")
+        dim_name = item.get("dimension", "")
+        assessor_name = item.get("assessor", "")
+        key_work = item.get("key_work", "").strip()
+        main_task = item.get("main_task", "").strip()
+        scoring_note = item.get("scoring_note", "").strip()
+        period = _normalize_period(item.get("period", ""))
+
+        item_copy = dict(item)  # 保留原始数据用于前端展示
+        item_copy["period"] = period
+
+        # 跳过无序号且全部关键字段为空的行
+        seq = str(item.get("seq", ""))
+        if seq and not seq.isdigit():
+            if not any([unit_name, dim_name, assessor_name, key_work, main_task]):
+                continue
+
+        errors = []
+
+        # --- 单位为空 ---
+        if not unit_name:
+            errors.append(_err("unit", "empty_unit", "被考核单位为空"))
+            row_errors.append((i, item_copy, errors))
+            continue
+
+        # --- 必填项为空 ---
+        missing = []
+        if not dim_name: missing.append("维度")
+        if not assessor_name: missing.append("评价部门")
+        if not key_work: missing.append("重点工作")
+        if not main_task: missing.append("主要任务")
+        if missing:
+            for m in missing:
+                field_map = {"维度": "dimension", "评价部门": "assessor", "重点工作": "key_work", "主要任务": "main_task"}
+                errors.append(_err(field_map[m], "empty_required", f"必填项为空：{m}"))
+            row_errors.append((i, item_copy, errors))
+            continue
+
+        # --- 维度匹配（模糊） ---
+        dim, dim_err, dim_suggestion, dim_sid = _find_dim_in_set_fuzzy(dim_name, plan_dims)
+        if not dim:
+            errors.append(_err("dimension", "dimension_not_found", dim_err,
+                               dim_suggestion, dim_sid, auto_fixable=bool(dim_suggestion)))
+            row_errors.append((i, item_copy, errors))
+            continue
+        elif dim_suggestion:
+            # 模糊匹配成功但非精确匹配 → 警告，需人工确认
+            errors.append(_err("dimension", "dimension_fuzzy",
+                               f"维度「{dim_name}」可能与「{dim_suggestion}」匹配，请确认",
+                               dim_suggestion, dim_sid, auto_fixable=True))
+
+        # --- 评价部门匹配（模糊） ---
+        assessor, assessor_err, assessor_suggestion, assessor_sid = _find_unit_in_set_fuzzy(assessor_name, plan_assessors)
+        if not assessor:
+            errors.append(_err("assessor", "assessor_not_found", f"评价部门{assessor_err}",
+                               assessor_suggestion, assessor_sid, auto_fixable=bool(assessor_suggestion)))
+            row_errors.append((i, item_copy, errors))
+            continue
+        elif assessor_suggestion:
+            # 模糊匹配成功但非精确匹配 → 警告，需人工确认
+            errors.append(_err("assessor", "assessor_fuzzy",
+                               f"评价部门「{assessor_name}」可能与「{assessor_suggestion}」匹配，请确认",
+                               assessor_suggestion, assessor_sid, auto_fixable=True))
+
+        # --- 被考核单位展开 ---
+        target_units = []
+
+        if any(kw in unit_name for kw in CATEGORY_KEYWORDS):
+            expanded, cat_err = _expand_category_units(unit_name, plan_assessed_groups)
+            if cat_err:
+                errors.append(_err("unit", "expand_failed", cat_err))
+                row_errors.append((i, item_copy, errors))
+                continue
+            if expanded:
+                target_units = [(u, None) for u in expanded]
+
+        if not target_units:
+            unit_names = _split_unit_names(unit_name)
+            if not unit_names:
+                errors.append(_err("unit", "empty_unit", "被考核单位为空"))
+                row_errors.append((i, item_copy, errors))
+                continue
+            for uname in unit_names:
+                u, u_err, u_suggestion, u_sid = _find_unit_in_set_fuzzy(uname, plan_assessed_units)
+                if not u:
+                    errors.append(_err("unit", "unit_not_found", u_err if u_err else f"单位「{uname}」不在方案预设中",
+                                       u_suggestion, u_sid, auto_fixable=bool(u_suggestion)))
+                else:
+                    target_units.append((u, None))
+                    if u_suggestion:
+                        # 模糊匹配成功但非精确匹配 → 警告，需人工确认
+                        errors.append(_err("unit", "unit_fuzzy",
+                                           f"单位「{uname}」可能与「{u_suggestion}」匹配，请确认",
+                                           u_suggestion, u_sid, auto_fixable=True))
+
+        if errors:
+            row_errors.append((i, item_copy, errors))
+            continue
+
+        if not target_units:
+            errors.append(_err("unit", "unit_not_found", "无法解析被考核单位"))
+            row_errors.append((i, item_copy, errors))
+            continue
+
+        # --- 生成任务 ---
+        main_items, main_split = _split_numbered_items(main_task)
+        score_items, score_split = _split_numbered_items(scoring_note)
+
+        task_dicts = []
+        if main_split:
+            for idx, mt in enumerate(main_items):
+                sn = score_items[idx] if score_split and idx < len(score_items) else scoring_note
+                for unit, _ in target_units:
+                    task_dicts.append({
+                        "plan_id": plan_id,
+                        "assessment_dimension_id": dim.id,
+                        "unit_id": unit.id,
+                        "assessor_unit_id": assessor.id,
+                        "key_work": key_work,
+                        "main_task": mt,
+                        "scoring_note": sn,
+                        "review_period": period,
+                    })
+        else:
+            for unit, _ in target_units:
+                task_dicts.append({
+                    "plan_id": plan_id,
+                    "assessment_dimension_id": dim.id,
+                    "unit_id": unit.id,
+                    "assessor_unit_id": assessor.id,
+                    "key_work": key_work,
+                    "main_task": main_task,
+                    "scoring_note": scoring_note,
+                    "review_period": period,
+                })
+
+        if task_dicts:
+            valid_tasks.append((i, item_copy, task_dicts))
+
+    return valid_tasks, row_errors
+
+
+def _parse_import_files(files, plan):
+    """解析所有上传文件，返回结构化数据用于校验。
+    返回: (parsed_files, file_errors)
+    parsed_files: [{filename, sheets: [{name, col_mapping, items}]}]
+    file_errors: [(filename, sheet_name, row_idx, error_msg)]
+    """
+    parsed_files = []
+    file_errors = []
+
+    for file in files:
+        filename = file.filename or "unknown.xlsx"
+        file_bytes = file.read()
+        wb_data = read_workbook(file_bytes, filename)
+
+        if wb_data is None:
+            file_errors.append((filename, "", 0, "无法读取文件，请确认文件格式正确"))
+            continue
+        if isinstance(wb_data, tuple):
+            file_errors.append((filename, "", 0, wb_data[1]))
+            continue
+
+        file_sheets = []
+        for sname, rows in wb_data.items():
+            if _should_skip_sheet(sname):
+                continue
+            if not rows or len(rows) < 2:
+                continue
+
+            header_row_idx = -1
+            col_mapping = None
+
+            for idx, row in enumerate(rows):
+                h = [str(v).strip() if v else "" for v in row]
+                if h == ["序号", "被考核单位", "维度", "评价部门", "重点工作", "主要任务", "评分说明", "晾晒周期"]:
+                    header_row_idx = idx
+                    col_mapping = {"seq": 0, "unit": 1, "dimension": 2, "assessor": 3, "key_work": 4, "main_task": 5, "scoring_note": 6, "period": 7}
+                    break
+                if h == ["序号", "指标来源", "评价部门", "维度", "重点工作", "主要任务", "评分说明", "被考核对象", "晾晒周期", "备注"]:
+                    header_row_idx = idx
+                    col_mapping = {"seq": 0, "source": 1, "assessor": 2, "dimension": 3, "key_work": 4, "main_task": 5, "scoring_note": 6, "unit": 7, "period": 8, "remark": 9}
+                    break
+                mapping = fuzzy_match_headers(h, HEADER_KEYWORDS)
+                if mapping:
+                    header_row_idx = idx
+                    col_mapping = mapping
+                    break
+
+            if header_row_idx < 0:
+                file_errors.append((filename, sname, 0, "未识别到表头行，请确认表头包含：评价部门、维度、重点工作、主要任务等"))
+                continue
+
+            items = []
+            prev = {}
+            for row in rows[header_row_idx + 1:]:
+                if all(v is None for v in row):
+                    continue
+                item = {}
+                for field, col_idx in col_mapping.items():
+                    val = row[col_idx] if col_idx < len(row) else None
+                    item[field] = str(val).strip() if val is not None else ""
+                if not item.get("dimension") and prev.get("dimension"):
+                    item["dimension"] = prev.get("dimension", "")
+                items.append(item)
+                prev = item
+
+            file_sheets.append({
+                "name": sname,
+                "col_mapping": col_mapping,
+                "header_row_idx": header_row_idx,
+                "items": items,
+            })
+
+        if file_sheets:
+            parsed_files.append({"filename": filename, "sheets": file_sheets})
+
+    return parsed_files, file_errors
+
+
+@task_bp.route("/api/tasks/import/preview", methods=["POST"])
+@jwt_required()
+def import_tasks_preview():
+    """预览导入：校验全部文件，返回结构化 JSON（含错误+建议修正值），不写入数据库"""
+    files = request.files.getlist("files")
+    if not files:
+        single = request.files.get("file")
+        if single:
+            files = [single]
+        else:
+            return jsonify({"msg": "请上传文件"}), 400
+
+    plan_id = request.form.get("plan_id", type=int)
+    if not plan_id:
+        return jsonify({"msg": "请指定考核方案"}), 400
+
+    plan = Plan.query.get(plan_id)
+    if not plan:
+        return jsonify({"msg": "方案不存在"}), 404
+
+    # 构建方案预设字典
+    plan_dims = {}
+    for ed in plan.evaluation_dimensions:
+        for dim in ed.assessment_dimensions:
+            plan_dims[dim.id] = dim
+    plan_assessors = {u.id: u for u in plan.assessor_units}
+    plan_assessed_units = {}
+    for g in plan.assessed_groups:
+        for u in g.units:
+            plan_assessed_units[u.id] = u
+
+    if not plan_dims:
+        return jsonify({"msg": f"方案「{plan.name}」没有预设考核维度"}), 400
+    if not plan_assessors:
+        return jsonify({"msg": f"方案「{plan.name}」没有设置主考单位"}), 400
+    if not plan_assessed_units:
+        return jsonify({"msg": f"方案「{plan.name}」没有被考核分组"}), 400
+
+    parsed_files, file_errors = _parse_import_files(files, plan)
+
+    # 汇总所有行
+    total_rows = 0
+    error_rows_count = 0
+    result_files = []
+
+    for pf in parsed_files:
+        result_sheets = []
+        for sheet in pf["sheets"]:
+            valid_tasks, row_errors = _validate_import_rows_fuzzy(
+                sheet["items"], plan_id, plan_dims, plan_assessors, plan_assessed_units, plan.assessed_groups,
+            )
+            total_rows += len(sheet["items"])
+
+            # 构建带错误信息的行数据
+            error_items = {ri: (item, errs) for ri, item, errs in row_errors}
+            valid_items = {ri: item for ri, item, _ in valid_tasks}
+            rows = []
+
+            for idx, item in enumerate(sheet["items"], 2):
+                if idx in error_items:
+                    item_data, errs = error_items[idx]
+                    rows.append({"row_idx": idx, "original": item_data, "errors": errs})
+                    error_rows_count += 1
+                elif idx in valid_items:
+                    rows.append({"row_idx": idx, "original": valid_items[idx], "errors": []})
+                else:
+                    rows.append({"row_idx": idx, "original": item, "errors": []})
+
+            result_sheets.append({
+                "sheet_name": sheet["name"],
+                "col_mapping": sheet["col_mapping"],
+                "rows": rows,
+            })
+
+        result_files.append({"filename": pf["filename"], "sheets": result_sheets})
+
+    # 文件级错误（如无法读取）
+    for fname, sname, ridx, msg in file_errors:
+        # find or create file entry
+        file_entry = next((f for f in result_files if f["filename"] == fname), None)
+        if not file_entry:
+            file_entry = {"filename": fname, "sheets": []}
+            result_files.append(file_entry)
+        sheet_entry = next((s for s in file_entry["sheets"] if s["sheet_name"] == str(sname)), None)
+        if not sheet_entry:
+            sheet_entry = {"sheet_name": str(sname) if sname else fname, "col_mapping": {}, "rows": []}
+            file_entry["sheets"].append(sheet_entry)
+        sheet_entry["rows"].append({"row_idx": ridx, "original": {}, "errors": [
+            {"field": "file", "type": "file_error", "message": msg, "suggestion": None, "suggestion_id": None, "auto_fixable": False}
+        ]})
+        error_rows_count += 1
+
+    # 统计自动可修正数
+    auto_fixable_count = 0
+    unfixable_count = 0
+    for f in result_files:
+        for s in f["sheets"]:
+            for row in s["rows"]:
+                for e in row["errors"]:
+                    if e["auto_fixable"]:
+                        auto_fixable_count += 1
+                    else:
+                        unfixable_count += 1
+
+    error_types = {}
+    for f in result_files:
+        for s in f["sheets"]:
+            for row in s["rows"]:
+                for e in row["errors"]:
+                    t = e["type"]
+                    error_types[t] = error_types.get(t, 0) + 1
+
+    return jsonify({"data": {
+        "plan_id": plan_id,
+        "plan_name": plan.name,
+        "total_rows": total_rows,
+        "error_rows": error_rows_count,
+        "auto_fixable": auto_fixable_count,
+        "unfixable": unfixable_count,
+        "error_types": error_types,
+        "files": result_files,
+    }})
+
+
+@task_bp.route("/api/tasks/import/validate-field", methods=["POST"])
+@jwt_required()
+def import_validate_field():
+    """校验单个字段值是否能在方案预设中匹配（仅精确匹配，模糊匹配不通过）。
+    支持分隔符拆分：如 '单位A、单位B' 会拆分后逐个精确匹配。"""
+    data = request.get_json()
+    if not data:
+        return jsonify({"valid": False, "message": "请提供校验数据"}), 400
+
+    plan_id = data.get("plan_id")
+    field = data.get("field", "").strip()
+    value = data.get("value", "").strip()
+    if not plan_id or not field or not value:
+        return jsonify({"valid": False, "message": "参数不完整"}), 400
+
+    plan = Plan.query.get(plan_id)
+    if not plan:
+        return jsonify({"valid": False, "message": "方案不存在"}), 404
+
+    # 构建候选字典
+    if field == "dimension":
+        candidates = {}
+        for ed in plan.evaluation_dimensions:
+            for dim in ed.assessment_dimensions:
+                candidates[dim.id] = dim
+    elif field == "assessor":
+        candidates = {u.id: u for u in plan.assessor_units}
+    elif field == "unit":
+        candidates = {}
+        for g in plan.assessed_groups:
+            for u in g.units:
+                candidates[u.id] = u
+    else:
+        return jsonify({"valid": False, "message": f"不支持的字段类型：{field}"}), 400
+
+    # 按分隔符拆分（保留括号内容），然后逐个精确匹配
+    sub_names = _split_unit_names(value)
+    if not sub_names:
+        sub_names = [value]
+
+    matched = []
+    unmatched = []
+    for sub in sub_names:
+        sub = sub.strip()
+        if not sub:
+            continue
+        obj, err = _exact_match_name(sub, candidates)
+        if obj:
+            matched.append({"name": obj.name, "id": obj.id})
+        else:
+            # 精确匹配失败，尝试模糊匹配给出建议
+            suggestion = None
+            suggestion_id = None
+            if field == "dimension":
+                _, _, sug, sid = _find_dim_in_set_fuzzy(sub, candidates)
+                suggestion, suggestion_id = sug, sid
+            else:
+                _, _, sug, sid = _find_unit_in_set_fuzzy(sub, candidates)
+                suggestion, suggestion_id = sug, sid
+            unmatched.append({
+                "value": sub,
+                "error": err,
+                "suggestion": suggestion,
+                "suggestion_id": suggestion_id,
+            })
+
+    if not unmatched:
+        return jsonify({
+            "valid": True,
+            "matched": matched,
+        })
+    else:
+        # 构建面向用户的错误消息
+        parts = []
+        for u in unmatched:
+            msg = u["error"]
+            if u.get("suggestion"):
+                msg += f"，建议：{u['suggestion']}"
+            parts.append(msg)
+        return jsonify({
+            "valid": False,
+            "message": "；".join(parts),
+            "matched": matched,
+            "unmatched": unmatched,
+        })
+
+
+@task_bp.route("/api/tasks/import/confirm", methods=["POST"])
+@jwt_required()
+def import_tasks_confirm():
+    """确认导入：接收已修正的任务数组（支持名称或ID），服务端解析后校验入库"""
+    data = request.get_json()
+    if not data:
+        return jsonify({"msg": "请提供导入数据"}), 400
+
+    plan_id = data.get("plan_id")
+    tasks = data.get("tasks", [])
+    if not plan_id:
+        return jsonify({"msg": "请指定考核方案"}), 400
+    if not tasks:
+        return jsonify({"msg": "没有可导入的任务"}), 400
+
+    plan = Plan.query.get(plan_id)
+    if not plan:
+        return jsonify({"msg": "方案不存在"}), 404
+
+    # 构建方案预设字典（名称 → 对象）
+    dim_by_name = {}
+    for ed in plan.evaluation_dimensions:
+        for dim in ed.assessment_dimensions:
+            dim_by_name[dim.name] = dim
+            dim_by_name[dim.id] = dim
+    dim_by_name_fuzzy = {}  # 用于按名称查找
+    for ed in plan.evaluation_dimensions:
+        for dim in ed.assessment_dimensions:
+            dim_by_name_fuzzy[_normalize_name(dim.name)] = dim
+
+    assessor_by_name = {}
+    for u in plan.assessor_units:
+        assessor_by_name[u.name] = u
+        assessor_by_name[u.id] = u
+    assessor_by_name_fuzzy = {_normalize_name(u.name): u for u in plan.assessor_units}
+
+    unit_by_name = {}
+    for g in plan.assessed_groups:
+        for u in g.units:
+            unit_by_name[u.name] = u
+            unit_by_name[u.id] = u
+    unit_by_name_fuzzy = {_normalize_name(u.name): u for u in unit_by_name.values()}
+
+    def _resolve_dim(t):
+        """解析维度：优先用 ID，否则按名称匹配"""
+        if t.get("assessment_dimension_id"):
+            return dim_by_name.get(t["assessment_dimension_id"])
+        name = t.get("dimension_name", "").strip()
+        if name:
+            obj, _ = _fuzzy_match_name(name, list(dim_by_name_fuzzy.values()), lambda d: d.name)
+            return obj
+        return None
+
+    def _resolve_assessor(t):
+        if t.get("assessor_unit_id"):
+            return assessor_by_name.get(t["assessor_unit_id"])
+        name = t.get("assessor_name", "").strip()
+        if name:
+            obj, _ = _fuzzy_match_name(name, list(assessor_by_name_fuzzy.values()), lambda u: u.name)
+            return obj
+        return None
+
+    def _resolve_units(t):
+        """解析被考核单位：支持分隔符拆分（逗号/顿号/分号），逐个子名称匹配。
+        返回 (unit_objects_list, error_messages_list)
+        """
+        unit_name = t.get("unit_name", "").strip()
+        if not unit_name:
+            return [], ["被考核单位为空"]
+
+        # 优先用 ID 直接查找
+        if t.get("unit_id"):
+            u = unit_by_name.get(t["unit_id"])
+            if u:
+                return [u], []
+            # ID 查找失败，回退到名称匹配
+
+        # 按分隔符拆分单位名称（与 _validate_import_rows_fuzzy 一致）
+        unit_names = _split_unit_names(unit_name)
+        if not unit_names:
+            return [], ["无法解析被考核单位"]
+
+        resolved = []
+        errors = []
+        for uname in unit_names:
+            uname = uname.strip()
+            if not uname:
+                continue
+            obj, _ = _fuzzy_match_name(uname, list(unit_by_name_fuzzy.values()), lambda u: u.name)
+            if obj:
+                if obj not in resolved:
+                    resolved.append(obj)
+            else:
+                errors.append(f"单位「{uname}」不在方案预设中")
+
+        if not resolved and not errors:
+            errors.append(f"无法解析被考核单位「{unit_name}」")
+        return resolved, errors
+
+    # 全量校验：任一任务无法解析则整批驳回，返回详细错误
+    resolution_errors = []
+    resolved_tasks = []
+
+    for i, t in enumerate(tasks):
+        dim = _resolve_dim(t)
+        assessor = _resolve_assessor(t)
+        units, unit_errors = _resolve_units(t)
+
+        task_errors = []
+        if not dim:
+            task_errors.append({"field": "dimension", "value": t.get("dimension_name", ""), "msg": "维度无法解析，不在方案预设中"})
+        if not assessor:
+            task_errors.append({"field": "assessor", "value": t.get("assessor_name", ""), "msg": "评价部门无法解析，不在方案预设中"})
+        if unit_errors:
+            for ue in unit_errors:
+                task_errors.append({"field": "unit", "value": t.get("unit_name", ""), "msg": ue})
+        if not units:
+            task_errors.append({"field": "unit", "value": t.get("unit_name", ""), "msg": "被考核单位无法解析，不在方案预设中"})
+        if not t.get("key_work") or not t.get("main_task"):
+            task_errors.append({"field": "required", "value": "", "msg": "重点工作或主要任务为空"})
+
+        if task_errors:
+            resolution_errors.append({"index": i, "errors": task_errors,
+                                       "dimension_name": t.get("dimension_name", ""),
+                                       "unit_name": t.get("unit_name", ""),
+                                       "assessor_name": t.get("assessor_name", ""),
+                                       "key_work": t.get("key_work", "")})
+        else:
+            for unit in units:
+                resolved_tasks.append((dim, assessor, unit, t))
+
+    if resolution_errors:
+        return jsonify({
+            "msg": f"{len(resolution_errors)} 个任务无法解析，请修正后重新提交",
+            "errors": resolution_errors,
+            "total": len(tasks),
+            "resolvable": len(resolved_tasks),
+        }), 400
+
+    # 全部通过校验，批量入库（含编号拆分）
+    created_count = 0
+    for dim, assessor, unit, t in resolved_tasks:
+        key_work = t.get("key_work", "")
+        main_task = t.get("main_task", "")
+        scoring_note = t.get("scoring_note", "")
+        review_period = t.get("review_period", "月度")
+        status = t.get("status", "pending")
+
+        # 拆分主要任务中的编号列表（与原 import 端点行为一致）
+        main_items, main_split = _split_numbered_items(main_task)
+        score_items, score_split = _split_numbered_items(scoring_note)
+
+        if main_split:
+            for idx, mt in enumerate(main_items):
+                sn = score_items[idx] if score_split and idx < len(score_items) else scoring_note
+                db.session.add(Task(
+                    plan_id=plan_id,
+                    assessment_dimension_id=dim.id,
+                    unit_id=unit.id,
+                    assessor_unit_id=assessor.id,
+                    key_work=key_work,
+                    main_task=mt,
+                    scoring_note=sn,
+                    review_period=review_period,
+                    status=status,
+                ))
+                created_count += 1
+        else:
+            db.session.add(Task(
+                plan_id=plan_id,
+                assessment_dimension_id=dim.id,
+                unit_id=unit.id,
+                assessor_unit_id=assessor.id,
+                key_work=key_work,
+                main_task=main_task,
+                scoring_note=scoring_note,
+                review_period=review_period,
+                status=status,
+            ))
+            created_count += 1
+
+    db.session.commit()
+
+    return jsonify({
+        "msg": f"成功导入 {created_count} 个任务（来自 {len(tasks)} 条提交数据）",
+        "data": {"created": created_count},
+    })
+
+
 @task_bp.route("/api/tasks/import", methods=["POST"])
 @jwt_required()
 def import_tasks():
-    if "file" not in request.files:
-        return jsonify({"msg": "请上传文件"}), 400
+    # 支持多文件批量导入（files[]），向后兼容旧单文件 key（file）
+    files = request.files.getlist("files")
+    if not files:
+        single = request.files.get("file")
+        if single:
+            files = [single]
+        else:
+            return jsonify({"msg": "请上传文件"}), 400
 
-    file = request.files["file"]
     plan_id = request.form.get("plan_id", type=int)
     if not plan_id:
         return jsonify({"msg": "请指定考核方案"}), 400
@@ -677,78 +1445,83 @@ def import_tasks():
     if not plan_assessed_units:
         return jsonify({"msg": f"方案「{plan.name}」没有被考核分组，请先在方案详情中配置"}), 400
 
-    filename = file.filename or "unknown.xlsx"
-    file_bytes = file.read()
+    # ========== 第一阶段：全量校验所有文件 ==========
+    all_valid_tasks = []       # [(filename, sheet_name, row_idx, task_dict), ...]
+    all_row_errors = []        # [(filename, sheet_name, row_idx, error_msg), ...]
+    file_items_map = {}        # {filename: {sheet_name: [(row_idx, item_dict), ...]}}
+    file_col_mapping = {}      # {filename: {sheet_name: col_mapping}}
+    processed_files = []       # [filename, ...] 按处理顺序
 
-    # 通用工作簿读取（自动识别 .xls / .xlsx）
-    wb_data = read_workbook(file_bytes, filename)
-    if wb_data is None:
-        return jsonify({"msg": "无法读取文件，请确认文件格式正确"}), 400
-    if isinstance(wb_data, tuple):
-        return jsonify({"msg": wb_data[1]}), 400
+    for file in files:
+        filename = file.filename or "unknown.xlsx"
+        file_bytes = file.read()
 
-    # ========== 第一阶段：全量校验 ==========
-    all_valid_tasks = []       # [(sheet_name, row_idx, task_dict), ...]
-    all_row_errors = []        # [(sheet_name, row_idx, error_msg), ...]
-    sheet_items_map = {}       # {sheet_name: [(row_idx, item_dict), ...]} 用于生成错误报告
-    sheet_col_mapping = {}     # {sheet_name: col_mapping}
-    sheet_header_idx = {}      # {sheet_name: header_row_idx}
-    sheet_rows_raw = {}        # {sheet_name: raw_rows}
-
-    for sname, rows in wb_data.items():
-        if _should_skip_sheet(sname):
+        wb_data = read_workbook(file_bytes, filename)
+        if wb_data is None:
+            all_row_errors.append((filename, "", 0, "无法读取文件，请确认文件格式正确"))
             continue
-        if not rows or len(rows) < 2:
+        if isinstance(wb_data, tuple):
+            all_row_errors.append((filename, "", 0, wb_data[1]))
             continue
 
-        header_row_idx = -1
-        col_mapping = None
+        processed_files.append(filename)
+        if filename not in file_items_map:
+            file_items_map[filename] = {}
+        if filename not in file_col_mapping:
+            file_col_mapping[filename] = {}
 
-        for idx, row in enumerate(rows):
-            h = [str(v).strip() if v else "" for v in row]
-            if h == ["序号", "被考核单位", "维度", "评价部门", "重点工作", "主要任务", "评分说明", "晾晒周期"]:
-                header_row_idx = idx
-                col_mapping = {"seq": 0, "unit": 1, "dimension": 2, "assessor": 3, "key_work": 4, "main_task": 5, "scoring_note": 6, "period": 7}
-                break
-            if h == ["序号", "指标来源", "评价部门", "维度", "重点工作", "主要任务", "评分说明", "被考核对象", "晾晒周期", "备注"]:
-                header_row_idx = idx
-                col_mapping = {"seq": 0, "source": 1, "assessor": 2, "dimension": 3, "key_work": 4, "main_task": 5, "scoring_note": 6, "unit": 7, "period": 8, "remark": 9}
-                break
-            mapping = fuzzy_match_headers(h, HEADER_KEYWORDS)
-            if mapping:
-                header_row_idx = idx
-                col_mapping = mapping
-                break
-
-        if header_row_idx < 0:
-            all_row_errors.append((sname, 0, "未识别到表头行，请确认表头包含：评价部门、维度、重点工作、主要任务等"))
-            continue
-
-        sheet_header_idx[sname] = header_row_idx
-        sheet_col_mapping[sname] = col_mapping
-        sheet_rows_raw[sname] = rows
-
-        items = []
-        prev = {}
-        for row in rows[header_row_idx + 1:]:
-            if all(v is None for v in row):
+        for sname, rows in wb_data.items():
+            if _should_skip_sheet(sname):
                 continue
-            item = {}
-            for field, col_idx in col_mapping.items():
-                val = row[col_idx] if col_idx < len(row) else None
-                item[field] = str(val).strip() if val is not None else ""
-            if not item.get("dimension") and prev.get("dimension"):
-                item["dimension"] = prev.get("dimension", "")
-            items.append(item)
-            prev = item
+            if not rows or len(rows) < 2:
+                continue
 
-        sheet_items_map[sname] = [(header_row_idx + 2 + idx, item) for idx, item in enumerate(items)]
+            header_row_idx = -1
+            col_mapping = None
 
-        valid_tasks, row_errors = _validate_import_rows(items, plan_id, plan_dims, plan_assessors, plan_assessed_units, plan.assessed_groups)
-        all_valid_tasks.extend([(sname, idx, t) for idx, t in valid_tasks])
-        all_row_errors.extend([(sname, idx, msg) for idx, msg in row_errors])
+            for idx, row in enumerate(rows):
+                h = [str(v).strip() if v else "" for v in row]
+                if h == ["序号", "被考核单位", "维度", "评价部门", "重点工作", "主要任务", "评分说明", "晾晒周期"]:
+                    header_row_idx = idx
+                    col_mapping = {"seq": 0, "unit": 1, "dimension": 2, "assessor": 3, "key_work": 4, "main_task": 5, "scoring_note": 6, "period": 7}
+                    break
+                if h == ["序号", "指标来源", "评价部门", "维度", "重点工作", "主要任务", "评分说明", "被考核对象", "晾晒周期", "备注"]:
+                    header_row_idx = idx
+                    col_mapping = {"seq": 0, "source": 1, "assessor": 2, "dimension": 3, "key_work": 4, "main_task": 5, "scoring_note": 6, "unit": 7, "period": 8, "remark": 9}
+                    break
+                mapping = fuzzy_match_headers(h, HEADER_KEYWORDS)
+                if mapping:
+                    header_row_idx = idx
+                    col_mapping = mapping
+                    break
 
-    # ========== 有错误：生成错误报告 Excel（摘要 + 各子表）并驳回全部导入 ==========
+            if header_row_idx < 0:
+                all_row_errors.append((filename, sname, 0, "未识别到表头行，请确认表头包含：评价部门、维度、重点工作、主要任务等"))
+                continue
+
+            file_col_mapping[filename][sname] = col_mapping
+
+            items = []
+            prev = {}
+            for row in rows[header_row_idx + 1:]:
+                if all(v is None for v in row):
+                    continue
+                item = {}
+                for field, col_idx in col_mapping.items():
+                    val = row[col_idx] if col_idx < len(row) else None
+                    item[field] = str(val).strip() if val is not None else ""
+                if not item.get("dimension") and prev.get("dimension"):
+                    item["dimension"] = prev.get("dimension", "")
+                items.append(item)
+                prev = item
+
+            file_items_map[filename][sname] = [(header_row_idx + 2 + idx, item) for idx, item in enumerate(items)]
+
+            valid_tasks, row_errors = _validate_import_rows(items, plan_id, plan_dims, plan_assessors, plan_assessed_units, plan.assessed_groups)
+            all_valid_tasks.extend([(filename, sname, idx, t) for idx, t in valid_tasks])
+            all_row_errors.extend([(filename, sname, idx, msg) for idx, msg in row_errors])
+
+    # ========== 有错误：生成单一错误报告 Excel（覆盖所有文件）==========
     if all_row_errors:
         from openpyxl import Workbook
         from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
@@ -770,21 +1543,38 @@ def import_tasks():
 
         # 数据列名
         data_fields = ["序号", "被考核单位", "维度", "评价部门", "重点工作", "主要任务", "评分说明", "晾晒周期"]
-        first_mapping = list(sheet_col_mapping.values())[0] if sheet_col_mapping else {}
+        first_mapping = None
+        for fname in processed_files:
+            for smap in file_col_mapping.get(fname, {}).values():
+                first_mapping = smap
+                break
+            if first_mapping:
+                break
+        if not first_mapping:
+            first_mapping = {}
         ordered_fields = [k for k in data_fields if k in first_mapping]
         for k in first_mapping:
             if k not in ordered_fields:
                 ordered_fields.append(k)
-        detail_headers = ["原行号"] + ordered_fields + ["错误说明"]
+        detail_headers = ["导入文件"] + ["原行号"] + ordered_fields + ["错误说明"]
 
-        # 按导入 sheet 分组错误
-        errors_by_sheet = {}
-        for sname, row_idx, msg in all_row_errors:
-            if sname not in errors_by_sheet:
-                errors_by_sheet[sname] = {}
-            if row_idx not in errors_by_sheet[sname]:
-                errors_by_sheet[sname][row_idx] = []
-            errors_by_sheet[sname][row_idx].append(msg)
+        # 按文件 → sheet → row 三级分组错误
+        errors_by_file = {}  # {filename: {sheet_name: {row_idx: [msgs]}}}
+        for fname, sname, row_idx, msg in all_row_errors:
+            if fname not in errors_by_file:
+                errors_by_file[fname] = {}
+            if sname not in errors_by_file[fname]:
+                errors_by_file[fname][sname] = {}
+            if row_idx not in errors_by_file[fname][sname]:
+                errors_by_file[fname][sname][row_idx] = []
+            errors_by_file[fname][sname][row_idx].append(msg)
+
+        # 统计总错误工作表数（跨所有文件）
+        total_error_sheets = sum(len(sheets) for sheets in errors_by_file.values())
+        total_error_files = len(errors_by_file)
+        total_sheets_imported = 0
+        for fname in processed_files:
+            total_sheets_imported += len(file_items_map.get(fname, {}))
 
         # ==================== Sheet 1: 错误摘要 ====================
         ws_summary = wb.active
@@ -799,11 +1589,14 @@ def import_tasks():
         title_cell.alignment = center_align
         row += 2
 
+        file_names_list = "、".join(processed_files)
         summary_items = [
             ("导入方案", plan.name),
-            ("导入文件", filename),
-            ("导入工作表数", f"{len([s for s in wb_data if not _should_skip_sheet(s) and wb_data.get(s) and len(wb_data[s]) >= 2])} 个"),
-            ("错误工作表数", f"{len(errors_by_sheet)} 个"),
+            ("导入文件数", f"{len(processed_files)} 个"),
+            ("导入文件", file_names_list),
+            ("导入工作表数", f"{total_sheets_imported} 个"),
+            ("错误文件数", f"{total_error_files} 个"),
+            ("错误工作表数", f"{total_error_sheets} 个"),
             ("总错误条数", f"{len(all_row_errors)} 条"),
         ]
         for label, value in summary_items:
@@ -812,101 +1605,126 @@ def import_tasks():
             row += 1
 
         row += 1
-        # 各工作表错误分布
-        ws_summary.cell(row=row, column=1, value="各工作表错误分布").font = header_font
+        # 各文件错误分布
+        ws_summary.cell(row=row, column=1, value="各文件错误分布").font = header_font
         row += 1
-        dist_headers = ["工作表名称", "错误行数", "详细说明"]
+        dist_headers = ["文件名称", "工作表", "错误行数", "详细说明"]
         for ci, h in enumerate(dist_headers, 1):
             cell = ws_summary.cell(row=row, column=ci, value=h)
             cell.font = header_font
             cell.alignment = center_align
             cell.border = thin_border
             cell.fill = header_fill
-        ws_summary.column_dimensions['C'].width = 60
+        ws_summary.column_dimensions['C'].width = 14
+        ws_summary.column_dimensions['D'].width = 55
         row += 1
 
-        for sname, row_errs in errors_by_sheet.items():
-            ws_summary.cell(row=row, column=1, value=sname).font = normal_font
-            ws_summary.cell(row=row, column=2, value=f"{len(row_errs)} 行").font = normal_font
-            # 汇总该 sheet 的所有错误类型
-            error_types = {}
-            for msgs in row_errs.values():
-                for m in msgs:
-                    key = m.split("：")[0] if "：" in m else m
-                    error_types[key] = error_types.get(key, 0) + 1
-            error_summary = "；".join(f"{k}({v}处)" for k, v in error_types.items())
-            ws_summary.cell(row=row, column=3, value=error_summary).font = normal_font
-            for ci in range(1, 4):
-                ws_summary.cell(row=row, column=ci).border = thin_border
-                ws_summary.cell(row=row, column=ci).alignment = center_align
-            row += 1
+        for fname in processed_files:
+            file_sheets = errors_by_file.get(fname, {})
+            if not file_sheets:
+                # 文件级别错误（如无法读取）
+                for _fname, _sname, _ridx, msg in all_row_errors:
+                    if _fname == fname and not _sname:
+                        ws_summary.cell(row=row, column=1, value=fname).font = normal_font
+                        ws_summary.cell(row=row, column=2, value="-").font = normal_font
+                        ws_summary.cell(row=row, column=3, value="1 行").font = normal_font
+                        ws_summary.cell(row=row, column=4, value=msg).font = Font(name="仿宋", size=11, color="FF0000")
+                        for ci in range(1, 5):
+                            ws_summary.cell(row=row, column=ci).border = thin_border
+                            ws_summary.cell(row=row, column=ci).alignment = center_align
+                        row += 1
+                continue
+
+            for sname, row_errs in file_sheets.items():
+                ws_summary.cell(row=row, column=1, value=fname).font = normal_font
+                ws_summary.cell(row=row, column=2, value=sname).font = normal_font
+                ws_summary.cell(row=row, column=3, value=f"{len(row_errs)} 行").font = normal_font
+                # 汇总该 sheet 的所有错误类型
+                error_types = {}
+                for msgs in row_errs.values():
+                    for m in msgs:
+                        key = m.split("：")[0] if "：" in m else m
+                        error_types[key] = error_types.get(key, 0) + 1
+                error_summary = "；".join(f"{k}({v}处)" for k, v in error_types.items())
+                ws_summary.cell(row=row, column=4, value=error_summary).font = normal_font
+                for ci in range(1, 5):
+                    ws_summary.cell(row=row, column=ci).border = thin_border
+                    ws_summary.cell(row=row, column=ci).alignment = center_align
+                row += 1
 
         row += 1
         ws_summary.cell(row=row, column=1, value="处理方式").font = header_font
         ws_summary.cell(row=row, column=2, value="以上问题导致全部数据未导入。请按各子表标记修正后，重新导入全部数据。").font = Font(name="仿宋", size=11, color="FF0000")
         row += 1
         ws_summary.cell(row=row, column=1, value="子表说明").font = header_font
-        ws_summary.cell(row=row, column=2, value="后续各子表按原工作表分列错误明细，含原始数据和具体错误原因，红色底色标记。").font = normal_font
+        ws_summary.cell(row=row, column=2, value="后续各子表按原工作表分列错误明细，首列标注来源文件，含原始数据和具体错误原因，红色底色标记。").font = normal_font
 
-        # ==================== 后续 Sheet：每个导入 sheet 一个错误明细子表 ====================
-        for sname, row_errs in errors_by_sheet.items():
-            safe_name = sname[:28]  # Excel sheet 名最多 31 字符
-            ws_detail = wb.create_sheet(title=safe_name)
+        # ==================== 后续 Sheet：每个（文件, 工作表）一个错误明细子表 ====================
+        for fname in processed_files:
+            file_sheets = errors_by_file.get(fname, {})
+            for sname, row_errs in file_sheets.items():
+                safe_name = fname[:15] + "_" + sname[:12]
+                safe_name = safe_name[:28]  # Excel sheet 名最多 31 字符
+                ws_detail = wb.create_sheet(title=safe_name)
 
-            # 表头
-            for ci, h in enumerate(detail_headers, 1):
-                cell = ws_detail.cell(row=1, column=ci, value=h)
-                cell.font = header_font
-                cell.alignment = center_align
-                cell.border = thin_border
-                cell.fill = header_fill
-            ws_detail.column_dimensions['A'].width = 10
-            for ci in range(2, len(detail_headers) + 1):
-                ws_detail.column_dimensions[chr(64 + ci) if ci <= 26 else 'A'].width = 16
-            ws_detail.column_dimensions[chr(64 + len(detail_headers)) if len(detail_headers) <= 26 else 'A'].width = 45
+                # 表头（首列为"导入文件"）
+                for ci, h in enumerate(detail_headers, 1):
+                    cell = ws_detail.cell(row=1, column=ci, value=h)
+                    cell.font = header_font
+                    cell.alignment = center_align
+                    cell.border = thin_border
+                    cell.fill = header_fill
+                ws_detail.column_dimensions['A'].width = 22
+                ws_detail.column_dimensions['B'].width = 10
+                for ci in range(3, len(detail_headers) + 1):
+                    col_letter = chr(64 + ci) if ci <= 26 else 'A'
+                    ws_detail.column_dimensions[col_letter].width = 16
+                last_col_letter = chr(64 + len(detail_headers)) if len(detail_headers) <= 26 else 'A'
+                ws_detail.column_dimensions[last_col_letter].width = 45
 
-            detail_row = 2
-            items = sheet_items_map.get(sname, [])
-            for row_idx in sorted(row_errs.keys()):
-                msgs = row_errs[row_idx]
-                combined_msg = "；".join(msgs)
+                detail_row = 2
+                items = file_items_map.get(fname, {}).get(sname, [])
+                for row_idx in sorted(row_errs.keys()):
+                    msgs = row_errs[row_idx]
+                    combined_msg = "；".join(msgs)
 
-                original_item = None
-                for idx, item in items:
-                    if idx == row_idx:
-                        original_item = item
-                        break
+                    original_item = None
+                    for idx, item in items:
+                        if idx == row_idx:
+                            original_item = item
+                            break
 
-                ws_detail.cell(row=detail_row, column=1, value=row_idx).font = normal_font
-                ci = 2
-                if original_item:
-                    for field in ordered_fields:
-                        cell = ws_detail.cell(row=detail_row, column=ci, value=original_item.get(field, ""))
-                        cell.font = normal_font
-                        cell.alignment = center_align
-                        cell.border = thin_border
-                        ci += 1
-                else:
-                    for _ in ordered_fields:
-                        cell = ws_detail.cell(row=detail_row, column=ci, value="")
-                        cell.alignment = center_align
-                        cell.border = thin_border
-                        ci += 1
-                err_cell = ws_detail.cell(row=detail_row, column=ci, value=combined_msg)
-                err_cell.font = err_font
-                err_cell.alignment = left_align
-                err_cell.fill = err_fill
-                err_cell.border = thin_border
+                    ws_detail.cell(row=detail_row, column=1, value=fname).font = normal_font
+                    ws_detail.cell(row=detail_row, column=2, value=row_idx).font = normal_font
+                    ci = 3
+                    if original_item:
+                        for field in ordered_fields:
+                            cell = ws_detail.cell(row=detail_row, column=ci, value=original_item.get(field, ""))
+                            cell.font = normal_font
+                            cell.alignment = center_align
+                            cell.border = thin_border
+                            ci += 1
+                    else:
+                        for _ in ordered_fields:
+                            cell = ws_detail.cell(row=detail_row, column=ci, value="")
+                            cell.alignment = center_align
+                            cell.border = thin_border
+                            ci += 1
+                    err_cell = ws_detail.cell(row=detail_row, column=ci, value=combined_msg)
+                    err_cell.font = err_font
+                    err_cell.alignment = left_align
+                    err_cell.fill = err_fill
+                    err_cell.border = thin_border
 
-                for c in range(1, ci + 1):
-                    ws_detail.cell(row=detail_row, column=c).fill = err_fill
+                    for c in range(1, ci + 1):
+                        ws_detail.cell(row=detail_row, column=c).fill = err_fill
 
-                detail_row += 1
+                    detail_row += 1
 
-            ws_detail.freeze_panes = "B2"
+                ws_detail.freeze_panes = "C2"
 
         # 将错误摘要移到第一个位置
-        wb.move_sheet("错误摘要", offset=-len(errors_by_sheet))
+        wb.move_sheet("错误摘要", offset=-total_error_sheets)
 
         output = io.BytesIO()
         wb.save(output)
@@ -918,13 +1736,13 @@ def import_tasks():
                          download_name=f"考核任务导入错误报告_{plan.name}.xlsx")
 
     # ========== 无错误：全部入库 ==========
-    for sname, row_idx, task_dict in all_valid_tasks:
+    for fname, sname, row_idx, task_dict in all_valid_tasks:
         db.session.add(Task(**task_dict))
     db.session.commit()
 
     return jsonify({
-        "msg": f"全部校验通过，成功导入 {len(all_valid_tasks)} 个任务",
-        "data": {"created": len(all_valid_tasks), "errors": 0},
+        "msg": f"全部校验通过，成功导入 {len(all_valid_tasks)} 个任务（来自 {len(processed_files)} 个文件）",
+        "data": {"created": len(all_valid_tasks), "errors": 0, "files": len(processed_files)},
     })
 
 

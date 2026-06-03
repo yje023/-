@@ -47,9 +47,8 @@
         <el-button @click="downloadTpl">下载导入模板</el-button>
         <el-button v-if="selectedRows.length" type="danger" @click="handleBatchDelete">删除选中({{ selectedRows.length }})</el-button>
         <el-button v-if="filterPlanId" type="danger" plain @click="handleBatchDeleteAll">删除全部任务</el-button>
-        <el-upload :show-file-list="false" :before-upload="handleImport" accept=".xlsx,.xls" :multiple="true" style="display:inline-block">
-          <el-button :disabled="!filterPlanId">批量导入xlsx</el-button>
-        </el-upload>
+        <input ref="fileInputRef" type="file" multiple accept=".xlsx,.xls" style="display:none" @change="handleFileSelect" />
+        <el-button :disabled="!filterPlanId" @click="$refs.fileInputRef.click()">批量导入xlsx</el-button>
       </template>
       <el-dropdown @command="handleExportMenu" style="margin-left:4px">
         <el-button type="primary">
@@ -208,6 +207,17 @@
         <el-descriptions-item label="评语">{{ viewTask.scores?.[0]?.comment || '-' }}</el-descriptions-item>
       </el-descriptions>
     </el-dialog>
+
+    <!-- 导入错误审查弹窗 -->
+    <ImportErrorDialog
+      v-if="importPreviewData"
+      v-model="importDialogVisible"
+      :preview-data="importPreviewData"
+      :plan-id="filterPlanId"
+      @close="importDialogVisible = false; importPreviewData = null"
+      @import-complete="onImportComplete"
+      @download-report="downloadErrorReport"
+    />
   </div>
 </template>
 
@@ -216,6 +226,7 @@ import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../store/auth'
 import * as api from '../api/task'
+import ImportErrorDialog from '../components/ImportErrorDialog.vue'
 import { getPlans, getPlan } from '../api/plan'
 import { getUnits } from '../api/unit'
 import { getChipSortOrder, saveChipSortOrder } from '../api/user'
@@ -549,30 +560,93 @@ const viewVisible = ref(false); const viewTask = ref(null)
 function openView(row) { viewTask.value = row; viewVisible.value = true }
 
 // 导入导出
-async function handleImport(file) {
-  if (!filterPlanId.value) { ElMessage.warning('请先筛选考核方案'); return false }
+const importDialogVisible = ref(false)
+const importPreviewData = ref(null)
+const importOriginalFiles = ref([])
+
+// 批量导入：先 preview，有错误弹窗审查，无错误直接 confirm
+async function handleFileSelect(event) {
+  const files = event.target.files
+  if (!files || !files.length) return
+  if (!filterPlanId.value) { ElMessage.warning('请先筛选考核方案'); return }
+
+  const fileArray = Array.from(files)
+  importOriginalFiles.value = fileArray
   try {
-    const r = await api.importTasks(filterPlanId.value, file)
-    const contentType = r.headers['content-type'] || ''
-    if (contentType.includes('application/json')) {
-      // 全部成功
-      const text = await r.data.text()
-      const data = JSON.parse(text)
-      ElMessage.success(data.msg || '导入成功')
+    const res = await api.importPreview(filterPlanId.value, fileArray)
+    const preview = res.data || res
+    if (preview.error_rows === 0) {
+      // 无错误 — 直接确认导入
+      const tasks = extractAllTasks(preview)
+      const result = await api.importConfirm(filterPlanId.value, tasks)
+      ElMessage.success(result.msg || result.data?.msg || '导入成功')
       await loadTasks()
     } else {
-      // 有错误，返回的是 Excel 错误报告
-      const blob = r.data
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `考核任务导入错误报告.xlsx`
-      a.click()
-      URL.revokeObjectURL(url)
-      ElMessage.error('导入数据存在问题，已下载错误报告，请修正后重新导入')
+      // 有错误 — 弹出审查弹窗
+      importPreviewData.value = preview
+      importDialogVisible.value = true
     }
-  } catch {}
-  return false
+  } catch (e) {
+    const errData = e.response?.data
+    if (errData?.errors && errData.errors.length > 0) {
+      // confirm 端点返回详细错误 — 弹窗展示
+      const errorList = errData.errors.slice(0, 20).map(err =>
+        `第${err.index + 1}条(${err.dimension_name || '?'}/${err.assessor_name || '?'}/${(err.unit_name || '?').slice(0, 30)}): ${err.errors.map(e => e.msg).join('；')}`
+      ).join('\n')
+      ElMessageBox.alert(
+        `${errData.msg}\n\n详细信息：\n${errorList}${errData.errors.length > 20 ? `\n... 共 ${errData.errors.length} 个错误` : ''}`,
+        '导入失败',
+        { confirmButtonText: '知道了', type: 'error', customClass: 'import-error-dialog' }
+      )
+    } else {
+      ElMessage.error(errData?.msg || '导入失败，请重试')
+    }
+  }
+  event.target.value = ''
+}
+
+function extractAllTasks(preview) {
+  const tasks = []
+  for (const f of preview.files || []) {
+    for (const s of f.sheets || []) {
+      for (const r of s.rows || []) {
+        if (r.errors.length === 0) {
+          tasks.push({
+            dimension_name: r.original.dimension || '',
+            unit_name: r.original.unit || '',
+            assessor_name: r.original.assessor || '',
+            key_work: r.original.key_work || '',
+            main_task: r.original.main_task || '',
+            scoring_note: r.original.scoring_note || '',
+            review_period: r.original.period || '月度',
+          })
+        }
+      }
+    }
+  }
+  return tasks
+}
+
+async function onImportComplete(result) {
+  importDialogVisible.value = false
+  importPreviewData.value = null
+  ElMessage.success(result.msg || result.data?.msg || '导入成功')
+  await loadTasks()
+}
+
+async function downloadErrorReport() {
+  if (!importOriginalFiles.value.length) return
+  try {
+    const r = await api.importTasks(filterPlanId.value, importOriginalFiles.value)
+    const blob = r.data
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `考核任务导入错误报告.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('错误报告已下载')
+  } catch { }
 }
 async function downloadTpl() {
   const r = await api.downloadTaskTemplate()
