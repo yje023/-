@@ -19,6 +19,7 @@ export function confirmTask(id) { return http.put(`/tasks/${id}/confirm`) }
 export function completeTask(id) { return http.put(`/tasks/${id}/complete`) }
 export function getTaskHistory(id) { return http.get(`/tasks/${id}/history`) }
 export function batchDistributeTasks(taskIds) { return http.post('/tasks/batch-distribute', { task_ids: taskIds }) }
+export function getGlobalLogs(params) { return http.get('/tasks/logs', { params }) }
 
 export function submitTask(id, content) { return http.post(`/tasks/${id}/submit`, { content }) }
 export function scoreTask(id, score, comment) { return http.post(`/tasks/${id}/score`, { score, comment }) }

@@ -1,25 +1,27 @@
 <template>
   <div class="content-card">
+    <!-- v1.5 Tab 分页 -->
+    <el-tabs v-model="activeTab" @tab-change="onTabChange">
+      <el-tab-pane label="全部" name="all" />
+      <el-tab-pane v-if="auth.currentIdentity==='assessor'" label="待分发" name="dispatch" />
+      <el-tab-pane label="进行中" name="progress" />
+      <el-tab-pane v-if="auth.currentIdentity==='assessor'" label="待审核" name="review" />
+      <el-tab-pane label="任务书" name="book" />
+      <el-tab-pane label="日志" name="logs" />
+    </el-tabs>
+
+    <!-- 任务视图（非日志 Tab） -->
+    <template v-if="activeTab !== 'logs'">
     <div class="search-bar">
       <el-select v-model="filterPlanId" placeholder="筛选方案" clearable @change="onFilterChange" style="width:200px">
         <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
-      </el-select>
-      <el-select v-model="filterStatus" placeholder="筛选状态" clearable @change="onFilterChange" style="width:140px">
-        <el-option label="草稿" value="draft" />
-        <el-option label="待填报" value="pending" />
-        <el-option label="已提交" value="submitted" />
-        <el-option label="已驳回" value="rejected" />
-        <el-option label="已审核" value="reviewed" />
-        <el-option label="已确认" value="confirmed" />
-        <el-option label="已完成" value="completed" />
       </el-select>
       <el-input v-model="searchKey" placeholder="搜索..." clearable @clear="onSearch" @keyup.enter="onSearch" style="width:160px" />
       <el-button type="primary" @click="onSearch">搜索</el-button>
       <el-button v-if="activeFilterCount" @click="clearChipFilter">清除筛选({{ activeFilterCount }})</el-button>
     </div>
 
-    <!-- 多维度方片筛选区 -->
-    <div class="chip-filter-area">
+    <div class="chip-filter-area" v-if="activeTab !== 'book'">
       <div v-if="!filterPlanId" style="text-align:center;color:#909399;padding:8px">请先选择一个考核方案查看维度筛选</div>
       <template v-else>
       <div v-for="dim in chipDimensions" :key="dim.key" class="chip-dim-row">
@@ -47,11 +49,12 @@
 
     <div class="search-bar">
       <template v-if="auth.currentIdentity==='assessor'">
-        <el-button type="primary" @click="openCreate">新建任务</el-button>
+        <el-button v-if="activeTab==='dispatch'" type="primary" @click="openCreateDraft">新建草稿</el-button>
+        <el-button v-else type="primary" @click="openCreate">新建任务</el-button>
         <el-button @click="downloadTpl">下载导入模板</el-button>
         <el-button v-if="canDistributeSelected" type="success" @click="handleBatchDistribute">分发选中({{ draftSelectedCount }})</el-button>
-        <el-button v-if="selectedRows.length" type="danger" @click="handleBatchDelete">删除选中({{ selectedRows.length }})</el-button>
-        <el-button v-if="filterPlanId" type="danger" plain @click="handleBatchDeleteAll">删除全部任务</el-button>
+        <el-button v-if="selectedRows.length && activeTab!=='book'" type="danger" @click="handleBatchDelete">删除选中({{ selectedRows.length }})</el-button>
+        <el-button v-if="filterPlanId && activeTab==='dispatch'" type="danger" plain @click="handleBatchDeleteAll">删除全部草稿</el-button>
         <input ref="fileInputRef" type="file" multiple accept=".xlsx,.xls" style="display:none" @change="handleFileSelect" />
         <el-button :disabled="!filterPlanId" @click="$refs.fileInputRef.click()">批量导入xlsx</el-button>
       </template>
@@ -74,7 +77,8 @@
       <template #empty>
         <el-empty description="暂无任务数据" :image-size="80" />
       </template>
-      <el-table-column type="selection" width="45" />
+      <el-table-column v-if="activeTab==='dispatch'" type="selection" width="45" />
+      <el-table-column v-else-if="activeTab!=='book'" type="selection" width="45" />
       <el-table-column prop="dimension_name" label="考核维度" width="120" />
       <el-table-column prop="assessor_unit_name" label="评价部门" width="120" />
       <el-table-column prop="key_work" label="重点工作" min-width="150">
@@ -102,9 +106,27 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" :width="auth.currentIdentity==='assessor'?340:260">
+      <el-table-column label="操作" :width="activeTab==='review'?320:activeTab==='book'?160:activeTab==='dispatch'?200:260">
         <template #default="{ row }">
-          <template v-if="auth.currentIdentity==='assessor'">
+          <!-- 待分发：快速操作 -->
+          <template v-if="activeTab==='dispatch'">
+            <el-button size="small" link @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" link type="danger" @click="handleDelete(row)">删除</el-button>
+          </template>
+          <!-- 待审核：聚焦审核操作 -->
+          <template v-else-if="activeTab==='review'">
+            <el-button size="small" link type="warning" @click="openReject(row)">驳回</el-button>
+            <el-button size="small" link type="primary" @click="handleReview(row,'reviewed')">通过</el-button>
+            <el-button size="small" link type="success" @click="openScore(row)">打分</el-button>
+            <el-button size="small" link @click="openHistory(row)">日志</el-button>
+          </template>
+          <!-- 任务书：快照查看 -->
+          <template v-else-if="activeTab==='book'">
+            <el-button size="small" link type="primary" @click="openSnapshot(row)">快照</el-button>
+            <el-button size="small" link @click="openHistory(row)">日志</el-button>
+          </template>
+          <!-- 全部/进行中：通用操作 -->
+          <template v-else-if="auth.currentIdentity==='assessor'">
             <el-button v-if="['pending','draft','rejected'].includes(row.status)" size="small" link @click="openEdit(row)">编辑</el-button>
             <el-button v-if="row.status==='submitted'" size="small" link type="warning" @click="openReject(row)">驳回</el-button>
             <el-button v-if="row.status==='submitted'" size="small" link type="primary" @click="handleReview(row,'reviewed')">审核</el-button>
@@ -114,7 +136,7 @@
             <el-button v-if="!['confirmed','completed'].includes(row.status)" size="small" link type="danger" @click="handleDelete(row)">删除</el-button>
             <el-button size="small" link @click="openHistory(row)">日志</el-button>
           </template>
-          <template v-if="auth.currentIdentity==='assessed'">
+          <template v-else-if="auth.currentIdentity==='assessed'">
             <el-button v-if="row.status==='pending'" size="small" link type="primary" @click="openSubmit(row)">填报</el-button>
             <el-button v-if="row.status==='rejected'" size="small" link type="warning" @click="handleResubmit(row)">重提</el-button>
             <el-button size="small" link @click="openView(row)">查看</el-button>
@@ -135,6 +157,44 @@
         @size-change="onPageSizeChange"
       />
     </div>
+    </template>
+
+    <!-- 日志视图 -->
+    <template v-else>
+      <div class="search-bar">
+        <el-select v-model="filterPlanId" placeholder="筛选方案" clearable @change="loadLogs" style="width:200px">
+          <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
+        </el-select>
+        <el-button type="primary" @click="loadLogs">刷新</el-button>
+      </div>
+      <el-table :data="logList" border stripe empty-description="暂无操作日志">
+        <template #empty><el-empty description="暂无操作日志" :image-size="80" /></template>
+        <el-table-column prop="created_at" label="时间" width="170" />
+        <el-table-column prop="operator_name" label="操作人" width="100" />
+        <el-table-column label="操作" width="100">
+          <template #default="{ row }">
+            <el-tag :type="historyItemType(row.action)" size="small">{{ historyActionLabel(row.action) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态变更" width="180">
+          <template #default="{ row }">
+            <template v-if="row.from_status">{{ statusLabel(row.from_status) }} → </template>
+            {{ statusLabel(row.to_status) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="task_key" label="关联任务" min-width="250" />
+        <el-table-column prop="comment" label="备注" min-width="150" />
+      </el-table>
+      <div class="pagination-wrap" v-if="logTotal > 0">
+        <el-pagination
+          v-model:current-page="logPage"
+          :page-size="logPageSize"
+          :total="logTotal"
+          layout="total, prev, pager, next"
+          @current-change="loadLogs"
+        />
+      </div>
+    </template>
 
     <!-- 新建/编辑任务 -->
     <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑任务' : '新建任务'" width="650px">
@@ -255,6 +315,38 @@
         </el-timeline-item>
       </el-timeline>
       <el-empty v-else description="暂无操作记录" />
+    </el-dialog>
+
+    <!-- 任务书快照查看 -->
+    <el-dialog v-model="snapshotVisible" title="任务书快照" width="650px">
+      <template v-if="snapshotData">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="考核维度" :span="1">{{ snapshotData.snapshot.dimension_name || snapshotData.task.dimension_name }}</el-descriptions-item>
+          <el-descriptions-item label="晾晒周期" :span="1">{{ snapshotData.snapshot.review_period || snapshotData.task.review_period }}</el-descriptions-item>
+          <el-descriptions-item label="评价部门" :span="1">{{ snapshotData.snapshot.assessor_unit_name || snapshotData.task.assessor_unit_name }}</el-descriptions-item>
+          <el-descriptions-item label="被考核单位" :span="1">{{ snapshotData.snapshot.unit_name || snapshotData.task.unit_name }}</el-descriptions-item>
+          <el-descriptions-item label="重点工作" :span="2">{{ snapshotData.snapshot.key_work || snapshotData.task.key_work }}</el-descriptions-item>
+          <el-descriptions-item label="主要任务" :span="2">{{ snapshotData.snapshot.main_task || snapshotData.task.main_task }}</el-descriptions-item>
+          <el-descriptions-item label="评分说明" :span="2">{{ snapshotData.snapshot.scoring_note || snapshotData.task.scoring_note || '-' }}</el-descriptions-item>
+        </el-descriptions>
+        <el-divider content-position="left">填报内容</el-divider>
+        <template v-if="(snapshotData.snapshot.submissions || snapshotData.task.submissions)?.length">
+          <div v-for="(s, i) in (snapshotData.snapshot.submissions || snapshotData.task.submissions)" :key="i" style="margin-bottom:8px">
+            <p style="color:#909399;font-size:12px">提交时间：{{ s.submitted_at }}</p>
+            <p style="white-space:pre-wrap">{{ s.content }}</p>
+          </div>
+        </template>
+        <el-empty v-else description="无填报记录" :image-size="40" />
+        <el-divider content-position="left">评分结果</el-divider>
+        <template v-if="(snapshotData.snapshot.scores || snapshotData.task.scores)?.length">
+          <div v-for="(s, i) in (snapshotData.snapshot.scores || snapshotData.task.scores)" :key="i">
+            <p>得分：<strong>{{ s.score }}</strong> | 评语：{{ s.comment || '-' }}</p>
+          </div>
+        </template>
+        <el-empty v-else description="未评分" :image-size="40" />
+        <el-divider />
+        <p style="color:#909399;font-size:12px">快照时间：{{ snapshotData.task.confirmed_at || snapshotData.task.created_at }}</p>
+      </template>
     </el-dialog>
 
     <!-- 导入错误审查弹窗 -->
@@ -539,6 +631,7 @@ const dialogVisible = ref(false); const isEdit = ref(false); const editId = ref(
 const formRef = ref(); const form = reactive({
   plan_id: null, assessment_dimension_id: null, unit_id: null, assessor_unit_id: null,
   key_work: '', main_task: '', scoring_note: '', review_period: '月度',
+  status: 'pending', task_source: 'direct',
 })
 const formRules = {
   plan_id: [{ required: true, message: '请选择方案', trigger: 'change' }],
@@ -554,6 +647,7 @@ function resetForm() {
   form.plan_id = null; form.assessment_dimension_id = null; form.unit_id = null
   form.assessor_unit_id = null; form.key_work = ''; form.main_task = ''
   form.scoring_note = ''; form.review_period = '月度'
+  form.status = 'pending'; form.task_source = 'direct'
 }
 
 function openCreate() {
@@ -565,6 +659,8 @@ function openEdit(row) {
   form.unit_id = row.unit_id; form.assessor_unit_id = row.assessor_unit_id
   form.key_work = row.key_work; form.main_task = row.main_task
   form.scoring_note = row.scoring_note; form.review_period = row.review_period
+  form.status = row.status || 'pending'
+  form.task_source = row.task_source || 'direct'
   dialogVisible.value = true
 }
 
@@ -625,6 +721,69 @@ async function handleBatchDistribute() {
     selectedRows.value = []
     await loadTasks()
   } catch {}
+}
+
+// ===== v1.5 Tab 分页 =====
+const activeTab = ref('all')
+const TAB_STATUS_MAP = {
+  all: '',
+  dispatch: 'draft',
+  progress: 'pending,submitted,rejected',
+  review: 'submitted',
+  book: 'confirmed,completed',
+  logs: '',
+}
+
+function onTabChange(tab) {
+  filterStatus.value = TAB_STATUS_MAP[tab] || ''
+  currentPage.value = 1
+  if (tab === 'logs') {
+    logPage.value = 1
+    loadLogs()
+  } else {
+    loadTasks()
+    if (tab !== 'book' && filterPlanId.value) loadFilterOpts()
+  }
+}
+
+// 草稿创建
+function openCreateDraft() {
+  isEdit.value = false; editId.value = null; resetForm()
+  form.plan_id = filterPlanId.value || null
+  form.status = 'draft'; form.task_source = 'dispatched'
+  dialogVisible.value = true
+}
+// 快照查看
+const snapshotVisible = ref(false); const snapshotData = ref(null)
+function openSnapshot(row) {
+  if (row.snapshot_parsed) {
+    snapshotData.value = { task: row, snapshot: row.snapshot_parsed }
+  } else {
+    // fallback: build from current data
+    snapshotData.value = {
+      task: row,
+      snapshot: {
+        key_work: row.key_work, main_task: row.main_task,
+        scoring_note: row.scoring_note, review_period: row.review_period,
+        unit_name: row.unit_name, assessor_unit_name: row.assessor_unit_name,
+        dimension_name: row.dimension_name,
+        submissions: row.submissions, scores: row.scores,
+      }
+    }
+  }
+  snapshotVisible.value = true
+}
+
+// 全局日志
+const logList = ref([]); const logTotal = ref(0); const logPage = ref(1); const logPageSize = ref(20)
+async function loadLogs() {
+  const params = { page: logPage.value, page_size: logPageSize.value }
+  if (filterPlanId.value) params.plan_id = filterPlanId.value
+  try {
+    const r = await api.getGlobalLogs(params)
+    if (r.data?.items) { logList.value = r.data.items; logTotal.value = r.data.total }
+    else { logList.value = r.data || []; logTotal.value = logList.value.length }
+  } catch { logList.value = []; logTotal.value = 0 }
 }
 
 async function handleReview(row, status) {

@@ -38,7 +38,11 @@ def build_task_query(
     if plan_id:
         q = q.filter(Task.plan_id == plan_id)
     if status:
-        q = q.filter(Task.status == status)
+        statuses = [s.strip() for s in str(status).split(",") if s.strip()]
+        if len(statuses) == 1:
+            q = q.filter(Task.status == statuses[0])
+        elif len(statuses) > 1:
+            q = q.filter(Task.status.in_(statuses))
     if period:
         periods = [p.strip() for p in str(period).split(",") if p.strip()]
         if periods:

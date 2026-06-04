@@ -218,6 +218,8 @@ def _task_to_dict(t):
         "distributed_at": str(t.distributed_at) if t.distributed_at else None,
         "confirmed_at": str(t.confirmed_at) if t.confirmed_at else None,
         "completed_at": str(t.completed_at) if t.completed_at else None,
+        "snapshot_data": t.snapshot_data or None,
+        "snapshot_parsed": (__import__("json").loads(t.snapshot_data) if t.snapshot_data else None),
         "submissions": [{"id": s.id, "content": s.content, "submitted_at": str(s.submitted_at)} for s in t.submissions],
         "scores": [{"id": s.id, "score": s.score, "comment": s.comment or "", "scored_at": str(s.scored_at)} for s in t.scores],
         "created_at": str(t.created_at),
@@ -557,6 +559,41 @@ def get_task_history(task_id):
         })
 
     return jsonify({"data": {"task_id": task_id, "history": history}})
+
+
+@task_bp.route("/api/tasks/logs", methods=["GET"])
+@jwt_required()
+def get_global_logs():
+    """获取全局操作日志（按方案筛选，分页）"""
+    plan_id = request.args.get("plan_id", type=int)
+    page = request.args.get("page", 1, type=int)
+    page_size = request.args.get("page_size", 20, type=int)
+    page_size = min(page_size, 100)
+
+    q = ProcessLog.query
+    if plan_id:
+        q = q.filter(ProcessLog.plan_id == plan_id)
+
+    total = q.count()
+    logs = q.order_by(ProcessLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+
+    items = []
+    for log in logs:
+        task = Task.query.get(log.task_id)
+        items.append({
+            "id": log.id,
+            "task_id": log.task_id,
+            "task_key": (task.key_work + " / " + task.main_task) if task else "已删除",
+            "plan_id": log.plan_id,
+            "action": log.action,
+            "from_status": log.from_status,
+            "to_status": log.to_status,
+            "comment": log.comment or "",
+            "operator_name": log.operator.username if log.operator else "未知",
+            "created_at": str(log.created_at),
+        })
+
+    return jsonify({"data": {"items": items, "total": total, "page": page, "page_size": page_size}})
 
 
 # ==================== 填报打分 ====================
