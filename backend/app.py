@@ -193,6 +193,17 @@ def _migrate_add_column(table, col_name, col_type, default_val):
         conn.close()
 
 
+def _migrate_v15_task_columns():
+    """v1.5: 为 task 表新增状态机相关字段"""
+    _migrate_add_column("task", "rejection_reason", "TEXT", "NULL")
+    _migrate_add_column("task", "task_source", "VARCHAR(20)", "'direct'")
+    _migrate_add_column("task", "distributed_at", "DATETIME", "NULL")
+    _migrate_add_column("task", "distributed_by", "INTEGER", "NULL")
+    _migrate_add_column("task", "confirmed_at", "DATETIME", "NULL")
+    _migrate_add_column("task", "completed_at", "DATETIME", "NULL")
+    _migrate_add_column("task", "snapshot_data", "TEXT", "NULL")
+
+
 def _migrate_nullable_columns():
     """将 admin 表 FK 列改为可空，解除系统管理与生产数据的强耦合"""
     import sqlite3
@@ -512,6 +523,7 @@ def _create_indexes():
             "CREATE INDEX IF NOT EXISTS idx_task_review_period ON task(review_period)",
             "CREATE INDEX IF NOT EXISTS idx_task_plan_status ON task(plan_id, status)",
             "CREATE INDEX IF NOT EXISTS idx_task_plan_unit ON task(plan_id, unit_id)",
+            "CREATE INDEX IF NOT EXISTS idx_task_task_source ON task(task_source)",
             "CREATE INDEX IF NOT EXISTS idx_user_unit_id ON user(unit_id)",
             "CREATE INDEX IF NOT EXISTS idx_user_role_id ON user(role_id)",
             "CREATE INDEX IF NOT EXISTS idx_quality_issue_plan_id ON quality_issue(plan_id)",
@@ -525,6 +537,10 @@ def _create_indexes():
             "CREATE INDEX IF NOT EXISTS idx_proxy_metric_pair_plan_id ON proxy_metric_pair(plan_id)",
             "CREATE INDEX IF NOT EXISTS idx_proxy_metric_pair_status ON proxy_metric_pair(status)",
             "CREATE INDEX IF NOT EXISTS idx_proxy_metric_pair_middle_unit ON proxy_metric_pair(middle_unit_id)",
+            # v1.5 新增索引
+            "CREATE INDEX IF NOT EXISTS idx_process_log_task_id ON process_log(task_id)",
+            "CREATE INDEX IF NOT EXISTS idx_process_log_plan_id ON process_log(plan_id)",
+            "CREATE INDEX IF NOT EXISTS idx_process_log_action ON process_log(action)",
         ]
         for sql in indexes:
             conn.execute(sql)
@@ -540,6 +556,7 @@ def init_db():
         db.create_all()
         _migrate_add_column("evaluation_dimension", "is_bonus_deduction", "BOOLEAN", "0")
         _migrate_add_column("organization", "category", "VARCHAR(20)", "''")
+        _migrate_v15_task_columns()
         _drop_old_checklist_tables()
         _migrate_nullable_columns()
         _create_indexes()

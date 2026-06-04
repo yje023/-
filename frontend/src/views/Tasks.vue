@@ -5,9 +5,13 @@
         <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
       </el-select>
       <el-select v-model="filterStatus" placeholder="筛选状态" clearable @change="onFilterChange" style="width:140px">
+        <el-option label="草稿" value="draft" />
         <el-option label="待填报" value="pending" />
         <el-option label="已提交" value="submitted" />
+        <el-option label="已驳回" value="rejected" />
         <el-option label="已审核" value="reviewed" />
+        <el-option label="已确认" value="confirmed" />
+        <el-option label="已完成" value="completed" />
       </el-select>
       <el-input v-model="searchKey" placeholder="搜索..." clearable @clear="onSearch" @keyup.enter="onSearch" style="width:160px" />
       <el-button type="primary" @click="onSearch">搜索</el-button>
@@ -45,6 +49,7 @@
       <template v-if="auth.currentIdentity==='assessor'">
         <el-button type="primary" @click="openCreate">新建任务</el-button>
         <el-button @click="downloadTpl">下载导入模板</el-button>
+        <el-button v-if="canDistributeSelected" type="success" @click="handleBatchDistribute">分发选中({{ draftSelectedCount }})</el-button>
         <el-button v-if="selectedRows.length" type="danger" @click="handleBatchDelete">删除选中({{ selectedRows.length }})</el-button>
         <el-button v-if="filterPlanId" type="danger" plain @click="handleBatchDeleteAll">删除全部任务</el-button>
         <input ref="fileInputRef" type="file" multiple accept=".xlsx,.xls" style="display:none" @change="handleFileSelect" />
@@ -85,22 +90,35 @@
       <el-table-column v-if="auth.currentIdentity==='assessor'" prop="unit_name" label="被考核单位" width="120" />
       <el-table-column prop="status" label="状态" width="90">
         <template #default="{ row }">
-          <el-tag :type="row.status==='pending'?'info':row.status==='submitted'?'warning':'success'" size="small">
-            {{ row.status==='pending'?'待填报':row.status==='submitted'?'已提交':'已审核' }}
+          <el-tag :type="statusTagType(row.status)" size="small">
+            {{ statusLabel(row.status) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" :width="auth.currentIdentity==='assessor'?280:200">
+      <el-table-column prop="task_source" label="来源" width="80">
+        <template #default="{ row }">
+          <el-tag :type="row.task_source==='dispatched'?'success':'info'" size="small">
+            {{ row.task_source==='dispatched'?'下发':'直接' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" :width="auth.currentIdentity==='assessor'?340:260">
         <template #default="{ row }">
           <template v-if="auth.currentIdentity==='assessor'">
-            <el-button size="small" link @click="openEdit(row)">编辑</el-button>
-            <el-button v-if="row.status==='pending'" size="small" link type="primary" @click="handleReview(row,'reviewed')">审核</el-button>
+            <el-button v-if="['pending','draft','rejected'].includes(row.status)" size="small" link @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="row.status==='submitted'" size="small" link type="warning" @click="openReject(row)">驳回</el-button>
+            <el-button v-if="row.status==='submitted'" size="small" link type="primary" @click="handleReview(row,'reviewed')">审核</el-button>
             <el-button v-if="row.status==='submitted'" size="small" link type="success" @click="openScore(row)">打分</el-button>
-            <el-button size="small" link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button v-if="row.status==='reviewed'" size="small" link type="primary" @click="handleConfirm(row)">确认</el-button>
+            <el-button v-if="row.status==='confirmed'" size="small" link type="success" @click="handleComplete(row)">完成</el-button>
+            <el-button v-if="!['confirmed','completed'].includes(row.status)" size="small" link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button size="small" link @click="openHistory(row)">日志</el-button>
           </template>
           <template v-if="auth.currentIdentity==='assessed'">
             <el-button v-if="row.status==='pending'" size="small" link type="primary" @click="openSubmit(row)">填报</el-button>
+            <el-button v-if="row.status==='rejected'" size="small" link type="warning" @click="handleResubmit(row)">重提</el-button>
             <el-button size="small" link @click="openView(row)">查看</el-button>
+            <el-button size="small" link @click="openHistory(row)">日志</el-button>
           </template>
         </template>
       </el-table-column>
@@ -208,6 +226,37 @@
       </el-descriptions>
     </el-dialog>
 
+    <!-- 驳回 -->
+    <el-dialog v-model="rejectVisible" title="驳回任务" width="450px">
+      <el-form>
+        <el-form-item label="驳回原因" required>
+          <el-input v-model="rejectReason" type="textarea" :rows="4" placeholder="请填写驳回原因..." />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="rejectVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleReject">确认驳回</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 操作历史 -->
+    <el-dialog v-model="historyVisible" title="操作记录" width="550px">
+      <el-timeline v-if="historyList.length">
+        <el-timeline-item
+          v-for="item in historyList" :key="item.id"
+          :timestamp="item.created_at"
+          :type="historyItemType(item.action)"
+          placement="top"
+        >
+          <p><strong>{{ historyActionLabel(item.action) }}</strong></p>
+          <p v-if="item.from_status">状态：{{ statusLabel(item.from_status) }} → {{ statusLabel(item.to_status) }}</p>
+          <p v-if="item.comment" style="color:#909399;font-size:13px">{{ item.comment }}</p>
+          <p style="color:#909399;font-size:12px">操作人：{{ item.operator_name }}</p>
+        </el-timeline-item>
+      </el-timeline>
+      <el-empty v-else description="暂无操作记录" />
+    </el-dialog>
+
     <!-- 导入错误审查弹窗 -->
     <ImportErrorDialog
       v-if="importPreviewData"
@@ -230,6 +279,29 @@ import ImportErrorDialog from '../components/ImportErrorDialog.vue'
 import { getPlans, getPlan } from '../api/plan'
 import { getUnits } from '../api/unit'
 import { getChipSortOrder, saveChipSortOrder } from '../api/user'
+
+// ===== v1.5 状态辅助函数 =====
+const STATUS_LABELS = {
+  draft: '草稿', pending: '待填报', submitted: '已提交',
+  rejected: '已驳回', reviewed: '已审核', confirmed: '已确认', completed: '已完成',
+}
+const STATUS_TAG_TYPES = {
+  draft: 'info', pending: 'info', submitted: 'warning',
+  rejected: 'danger', reviewed: 'success', confirmed: '', completed: 'success',
+}
+const HISTORY_ACTION_LABELS = {
+  create: '创建任务', submit: '提交填报', reject: '驳回', resubmit: '重新提报',
+  review: '审核通过', confirm: '确认纳入任务书', complete: '标记完成', distribute: '分发任务',
+}
+const HISTORY_ITEM_TYPES = {
+  create: 'primary', submit: 'primary', reject: 'danger', resubmit: 'warning',
+  review: 'success', confirm: 'success', complete: 'success', distribute: 'primary',
+}
+
+function statusLabel(s) { return STATUS_LABELS[s] || s || '-' }
+function statusTagType(s) { return STATUS_TAG_TYPES[s] || 'info' }
+function historyActionLabel(a) { return HISTORY_ACTION_LABELS[a] || a }
+function historyItemType(a) { return HISTORY_ITEM_TYPES[a] || 'primary' }
 
 const auth = useAuthStore()
 const plans = ref([])
@@ -536,8 +608,65 @@ async function handleBatchDeleteAll() {
   } catch {}
 }
 
+// ===== v1.5 批量分发 =====
+const draftSelectedCount = computed(() => selectedRows.value.filter(r => r.status === 'draft').length)
+const canDistributeSelected = computed(() => draftSelectedCount.value > 0 && selectedRows.value.every(r => r.status === 'draft'))
+
+async function handleBatchDistribute() {
+  await ElMessageBox.confirm(
+    `确定分发选中的 ${draftSelectedCount.value} 个草稿任务？分发后被考核单位将可见。`,
+    '批量分发',
+    { type: 'warning', confirmButtonText: '确认分发', cancelButtonText: '取消' }
+  )
+  try {
+    const ids = selectedRows.value.filter(r => r.status === 'draft').map(r => r.id)
+    const r = await api.batchDistributeTasks(ids)
+    ElMessage.success(r.msg || '分发成功')
+    selectedRows.value = []
+    await loadTasks()
+  } catch {}
+}
+
 async function handleReview(row, status) {
   try { await api.reviewTask(row.id, status); ElMessage.success('审核完成'); await loadTasks() } catch {}
+}
+
+// ===== v1.5 状态机操作 =====
+// 驳回
+const rejectVisible = ref(false); const rejectReason = ref(''); const rejectTaskId = ref(null)
+function openReject(row) { rejectTaskId.value = row.id; rejectReason.value = ''; rejectVisible.value = true }
+async function handleReject() {
+  if (!rejectReason.value.trim()) { ElMessage.warning('请填写驳回原因'); return }
+  try { await api.rejectTask(rejectTaskId.value, rejectReason.value); ElMessage.success('已驳回'); rejectVisible.value = false; await loadTasks() } catch {}
+}
+
+// 重提
+async function handleResubmit(row) {
+  await ElMessageBox.confirm('确认重新提报该任务？任务将回到待填报状态。', '确认重提', { type: 'warning' })
+  try { await api.resubmitTask(row.id); ElMessage.success('已重提，可重新编辑提交'); await loadTasks() } catch {}
+}
+
+// 确认
+async function handleConfirm(row) {
+  await ElMessageBox.confirm('确认将该任务纳入任务书？确认后数据将锁定不可修改。', '确认纳入任务书', { type: 'warning' })
+  try { await api.confirmTask(row.id); ElMessage.success('已确认纳入任务书'); await loadTasks() } catch {}
+}
+
+// 完成
+async function handleComplete(row) {
+  await ElMessageBox.confirm('确认标记该任务为已完成？', '标记完成', { type: 'warning' })
+  try { await api.completeTask(row.id); ElMessage.success('已标记完成'); await loadTasks() } catch {}
+}
+
+// 操作历史
+const historyVisible = ref(false); const historyList = ref([])
+async function openHistory(row) {
+  historyList.value = []
+  historyVisible.value = true
+  try {
+    const r = await api.getTaskHistory(row.id)
+    historyList.value = r.data?.history || r.data || []
+  } catch { historyList.value = [] }
 }
 
 // 填报

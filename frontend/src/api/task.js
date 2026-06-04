@@ -13,6 +13,12 @@ export function deleteTask(id) { return http.delete(`/tasks/${id}`) }
 export function batchDeleteTasks(ids) { return http.post('/tasks/batch-delete', { ids }) }
 export function batchDeleteAllTasks(planId) { return http.delete('/tasks/batch-all', { params: { plan_id: planId } }) }
 export function reviewTask(id, status) { return http.put(`/tasks/${id}/review`, { status }) }
+export function rejectTask(id, reason) { return http.put(`/tasks/${id}/reject`, { reason }) }
+export function resubmitTask(id) { return http.put(`/tasks/${id}/resubmit`) }
+export function confirmTask(id) { return http.put(`/tasks/${id}/confirm`) }
+export function completeTask(id) { return http.put(`/tasks/${id}/complete`) }
+export function getTaskHistory(id) { return http.get(`/tasks/${id}/history`) }
+export function batchDistributeTasks(taskIds) { return http.post('/tasks/batch-distribute', { task_ids: taskIds }) }
 
 export function submitTask(id, content) { return http.post(`/tasks/${id}/submit`, { content }) }
 export function scoreTask(id, score, comment) { return http.post(`/tasks/${id}/score`, { score, comment }) }

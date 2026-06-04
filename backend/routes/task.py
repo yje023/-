@@ -1,8 +1,9 @@
 import io, re, zipfile
+from datetime import datetime
 from flask import Blueprint, request, jsonify, send_file
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy.orm import joinedload
-from models import db, Task, TaskSubmission, TaskScore, Plan, AssessmentDimension, Unit, User, QualityIssue, ConfirmedPattern, ProxyMetricPair
+from models import db, Task, TaskSubmission, TaskScore, Plan, AssessmentDimension, Unit, User, QualityIssue, ConfirmedPattern, ProxyMetricPair, ProcessLog
 from utils.xlsx_handler import export_xlsx, export_gov_xlsx, read_workbook, fuzzy_match_headers, HEADER_KEYWORDS
 from services.task_query import build_task_query
 
@@ -11,6 +12,20 @@ task_bp = Blueprint("task", __name__)
 
 def _get_user(user_id):
     return User.query.get(user_id)
+
+
+def _add_process_log(task_id, plan_id, action, from_status, to_status, operator_id, comment=None):
+    """记录操作日志"""
+    log = ProcessLog(
+        task_id=task_id,
+        plan_id=plan_id,
+        action=action,
+        from_status=from_status,
+        to_status=to_status,
+        operator_id=operator_id,
+        comment=comment,
+    )
+    db.session.add(log)
 
 
 @task_bp.route("/api/tasks", methods=["GET"])
@@ -198,6 +213,11 @@ def _task_to_dict(t):
         "scoring_note": t.scoring_note or "",
         "review_period": t.review_period,
         "status": t.status,
+        "rejection_reason": t.rejection_reason or "",
+        "task_source": t.task_source or "direct",
+        "distributed_at": str(t.distributed_at) if t.distributed_at else None,
+        "confirmed_at": str(t.confirmed_at) if t.confirmed_at else None,
+        "completed_at": str(t.completed_at) if t.completed_at else None,
         "submissions": [{"id": s.id, "content": s.content, "submitted_at": str(s.submitted_at)} for s in t.submissions],
         "scores": [{"id": s.id, "score": s.score, "comment": s.comment or "", "scored_at": str(s.scored_at)} for s in t.scores],
         "created_at": str(t.created_at),
@@ -213,6 +233,11 @@ def create_task():
         if not data.get(k):
             return jsonify({"msg": f"缺少必填项：{k}"}), 400
 
+    initial_status = data.get("status", "pending")
+    if initial_status not in ("pending", "draft"):
+        initial_status = "pending"
+
+    user = _get_user(int(get_jwt_identity()))
     task = Task(
         plan_id=data["plan_id"],
         assessment_dimension_id=data["assessment_dimension_id"],
@@ -222,8 +247,13 @@ def create_task():
         main_task=data["main_task"].strip(),
         scoring_note=data.get("scoring_note", "").strip(),
         review_period=data["review_period"],
+        status=initial_status,
+        task_source=data.get("task_source", "direct"),
     )
     db.session.add(task)
+    db.session.flush()  # 获取 task.id
+    if user:
+        _add_process_log(task.id, task.plan_id, "create", None, initial_status, user.id)
     db.session.commit()
     return jsonify({"msg": "创建成功", "data": {"id": task.id}})
 
@@ -234,6 +264,9 @@ def update_task(task_id):
     task = Task.query.get(task_id)
     if not task:
         return jsonify({"msg": "任务不存在"}), 404
+
+    if task.status in ("confirmed", "completed"):
+        return jsonify({"msg": "已确认/已完成的任务不可编辑，请先通过管理员解除确认"}), 403
 
     data = request.get_json()
     for field in ["key_work", "main_task", "scoring_note", "review_period"]:
@@ -254,6 +287,8 @@ def delete_task(task_id):
     task = Task.query.get(task_id)
     if not task:
         return jsonify({"msg": "任务不存在"}), 404
+    if task.status in ("confirmed", "completed"):
+        return jsonify({"msg": "已确认/已完成的任务不可删除"}), 403
     db.session.delete(task)
     db.session.commit()
     return jsonify({"msg": "删除成功"})
@@ -300,6 +335,9 @@ def batch_delete_all_tasks():
     if plan_id:
         ConfirmedPattern.query.filter_by(plan_id=plan_id).delete(synchronize_session=False)
 
+    # 清理操作日志
+    ProcessLog.query.filter(ProcessLog.task_id.in_(task_ids)).delete(synchronize_session=False)
+
     # 清理质量检查（cascade 会自动处理，此处作为兜底）
     QualityIssue.query.filter(QualityIssue.task_id.in_(task_ids)).delete(synchronize_session=False)
 
@@ -317,6 +355,7 @@ def batch_delete_tasks():
     ids = data.get("ids", [])
     if not ids:
         return jsonify({"msg": "请选择要删除的任务"}), 400
+    ProcessLog.query.filter(ProcessLog.task_id.in_(ids)).delete(synchronize_session=False)
     Task.query.filter(Task.id.in_(ids)).delete(synchronize_session=False)
     db.session.commit()
     return jsonify({"msg": f"已删除 {len(ids)} 个任务"})
@@ -328,10 +367,196 @@ def review_task(task_id):
     task = Task.query.get(task_id)
     if not task:
         return jsonify({"msg": "任务不存在"}), 404
+    if task.status not in ("submitted",):
+        return jsonify({"msg": f"当前状态「{task.status}」不可审核，仅已提交状态可审核"}), 403
+
+    user = _get_user(int(get_jwt_identity()))
     data = request.get_json()
-    task.status = data.get("status", "reviewed")
+    old_status = task.status
+    new_status = data.get("status", "reviewed")
+    if new_status not in ("reviewed", "rejected"):
+        return jsonify({"msg": "无效的目标状态"}), 400
+    task.status = new_status
+    if new_status == "rejected":
+        task.rejection_reason = data.get("rejection_reason", "")
+    _add_process_log(task.id, task.plan_id, "reject" if new_status == "rejected" else "review",
+                     old_status, new_status, user.id,
+                     comment=data.get("rejection_reason", "") if new_status == "rejected" else None)
     db.session.commit()
-    return jsonify({"msg": "审核完成"})
+    return jsonify({"msg": "驳回成功" if new_status == "rejected" else "审核完成"})
+
+
+# ==================== v1.5 状态机操作 ====================
+
+@task_bp.route("/api/tasks/<int:task_id>/reject", methods=["PUT"])
+@jwt_required()
+def reject_task(task_id):
+    """驳回任务: submitted → rejected"""
+    task = Task.query.get(task_id)
+    if not task:
+        return jsonify({"msg": "任务不存在"}), 404
+    if task.status not in ("submitted",):
+        return jsonify({"msg": f"当前状态「{task.status}」不可驳回，仅已提交状态可驳回"}), 403
+
+    user = _get_user(int(get_jwt_identity()))
+    # 权限：系统管理员 或 主考单位
+    is_admin = user.role and user.role.is_system
+    is_assessor = user.current_identity == "assessor" and user.unit_id == task.assessor_unit_id
+    if not (is_admin or is_assessor):
+        return jsonify({"msg": "仅主考单位或管理员可驳回任务"}), 403
+
+    data = request.get_json()
+    reason = data.get("reason", "").strip()
+    if not reason:
+        return jsonify({"msg": "驳回原因不能为空"}), 400
+
+    old_status = task.status
+    task.status = "rejected"
+    task.rejection_reason = reason
+    _add_process_log(task.id, task.plan_id, "reject", old_status, "rejected", user.id, comment=reason)
+    db.session.commit()
+    return jsonify({"msg": "驳回成功"})
+
+
+@task_bp.route("/api/tasks/<int:task_id>/resubmit", methods=["PUT"])
+@jwt_required()
+def resubmit_task(task_id):
+    """重提任务: rejected → pending（被考核单位修改后重提）"""
+    task = Task.query.get(task_id)
+    if not task:
+        return jsonify({"msg": "任务不存在"}), 404
+    if task.status not in ("rejected",):
+        return jsonify({"msg": f"当前状态「{task.status}」不可重提，仅已驳回状态可重提"}), 403
+
+    user = _get_user(int(get_jwt_identity()))
+    if user.unit_id != task.unit_id:
+        return jsonify({"msg": "仅被考核单位可重提"}), 403
+
+    old_status = task.status
+    task.status = "pending"
+    task.rejection_reason = None  # 清除旧驳回原因
+    _add_process_log(task.id, task.plan_id, "resubmit", old_status, "pending", user.id)
+    db.session.commit()
+    return jsonify({"msg": "已重提，可重新编辑提交"})
+
+
+@task_bp.route("/api/tasks/<int:task_id>/confirm", methods=["PUT"])
+@jwt_required()
+def confirm_task(task_id):
+    """确认任务纳入任务书: reviewed → confirmed（快照数据）"""
+    task = Task.query.get(task_id)
+    if not task:
+        return jsonify({"msg": "任务不存在"}), 404
+    if task.status not in ("reviewed",):
+        return jsonify({"msg": f"当前状态「{task.status}」不可确认，仅已审核状态可确认"}), 403
+
+    user = _get_user(int(get_jwt_identity()))
+    if not (user.role and user.role.is_system):
+        return jsonify({"msg": "仅管理员可确认任务书"}), 403
+
+    import json as _json
+    # 生成快照数据
+    snapshot = {
+        "key_work": task.key_work,
+        "main_task": task.main_task,
+        "scoring_note": task.scoring_note or "",
+        "review_period": task.review_period,
+        "unit_name": task.unit.name if task.unit else "",
+        "assessor_unit_name": task.assessor_unit.name if task.assessor_unit else "",
+        "dimension_name": task.assessment_dimension.name if task.assessment_dimension else "",
+        "submissions": [{"content": s.content, "submitted_at": str(s.submitted_at)} for s in task.submissions],
+        "scores": [{"score": s.score, "comment": s.comment or "", "scored_at": str(s.scored_at)} for s in task.scores],
+    }
+
+    old_status = task.status
+    task.status = "confirmed"
+    task.confirmed_at = datetime.utcnow()
+    task.snapshot_data = _json.dumps(snapshot, ensure_ascii=False)
+    _add_process_log(task.id, task.plan_id, "confirm", old_status, "confirmed", user.id)
+    db.session.commit()
+    return jsonify({"msg": "已确认纳入任务书"})
+
+
+@task_bp.route("/api/tasks/batch-distribute", methods=["POST"])
+@jwt_required()
+def batch_distribute_tasks():
+    """批量分发任务：draft → pending，任务由不可见变为对考核单位可见"""
+    data = request.get_json()
+    task_ids = data.get("task_ids", [])
+    if not task_ids:
+        return jsonify({"msg": "请选择要分发的任务"}), 400
+
+    user = _get_user(int(get_jwt_identity()))
+    if not (user.role and user.role.is_system):
+        return jsonify({"msg": "仅管理员可分发任务"}), 403
+
+    tasks = Task.query.filter(Task.id.in_(task_ids), Task.status == "draft").all()
+    if not tasks:
+        return jsonify({"msg": "没有可分发的草稿任务（仅草稿状态可分发）"}), 400
+
+    plan_id_set = set(t.plan_id for t in tasks)
+    if len(plan_id_set) > 1:
+        return jsonify({"msg": "只能批量分发同一方案下的草稿任务"}), 400
+
+    now = datetime.utcnow()
+    count = 0
+    for task in tasks:
+        old_status = task.status
+        task.status = "pending"
+        task.distributed_at = now
+        task.distributed_by = user.id
+        _add_process_log(task.id, task.plan_id, "distribute", old_status, "pending", user.id)
+        count += 1
+
+    db.session.commit()
+    return jsonify({"msg": f"成功分发 {count} 个任务，被考核单位现在可见", "data": {"distributed": count}})
+
+
+@task_bp.route("/api/tasks/<int:task_id>/complete", methods=["PUT"])
+@jwt_required()
+def complete_task(task_id):
+    """完成任务: confirmed → completed"""
+    task = Task.query.get(task_id)
+    if not task:
+        return jsonify({"msg": "任务不存在"}), 404
+    if task.status not in ("confirmed",):
+        return jsonify({"msg": f"当前状态「{task.status}」不可完成，仅已确认状态可标记完成"}), 403
+
+    user = _get_user(int(get_jwt_identity()))
+    if not (user.role and user.role.is_system):
+        return jsonify({"msg": "仅管理员可标记完成"}), 403
+
+    old_status = task.status
+    task.status = "completed"
+    task.completed_at = datetime.utcnow()
+    _add_process_log(task.id, task.plan_id, "complete", old_status, "completed", user.id)
+    db.session.commit()
+    return jsonify({"msg": "已标记完成"})
+
+
+@task_bp.route("/api/tasks/<int:task_id>/history", methods=["GET"])
+@jwt_required()
+def get_task_history(task_id):
+    """获取任务操作历史"""
+    task = Task.query.get(task_id)
+    if not task:
+        return jsonify({"msg": "任务不存在"}), 404
+
+    logs = ProcessLog.query.filter_by(task_id=task_id).order_by(ProcessLog.created_at.desc()).all()
+    history = []
+    for log in logs:
+        operator_name = log.operator.username if log.operator else "未知"
+        history.append({
+            "id": log.id,
+            "action": log.action,
+            "from_status": log.from_status,
+            "to_status": log.to_status,
+            "comment": log.comment or "",
+            "operator_name": operator_name,
+            "created_at": str(log.created_at),
+        })
+
+    return jsonify({"data": {"task_id": task_id, "history": history}})
 
 
 # ==================== 填报打分 ====================
@@ -342,6 +567,9 @@ def submit_task(task_id):
     task = Task.query.get(task_id)
     if not task:
         return jsonify({"msg": "任务不存在"}), 404
+
+    if task.status not in ("pending",):
+        return jsonify({"msg": f"当前状态「{task.status}」不可提交，仅待办状态可提交"}), 403
 
     user = _get_user(int(get_jwt_identity()))
     if user.unit_id != task.unit_id:
@@ -354,7 +582,9 @@ def submit_task(task_id):
 
     submission = TaskSubmission(task_id=task.id, content=content)
     db.session.add(submission)
+    old_status = task.status
     task.status = "submitted"
+    _add_process_log(task.id, task.plan_id, "submit", old_status, "submitted", user.id)
     db.session.commit()
     return jsonify({"msg": "提交成功"})
 
@@ -365,6 +595,9 @@ def score_task(task_id):
     task = Task.query.get(task_id)
     if not task:
         return jsonify({"msg": "任务不存在"}), 404
+
+    if task.status not in ("submitted",):
+        return jsonify({"msg": f"当前状态「{task.status}」不可评分，仅已提交状态可评分"}), 403
 
     user = _get_user(int(get_jwt_identity()))
     if user.unit_id != task.assessor_unit_id:
@@ -382,7 +615,10 @@ def score_task(task_id):
     else:
         db.session.add(TaskScore(task_id=task.id, score=float(score_val), comment=data.get("comment", "").strip()))
 
+    old_status = task.status
     task.status = "reviewed"
+    _add_process_log(task.id, task.plan_id, "review", old_status, "reviewed", user.id,
+                     comment=f"评分: {score_val}" + (f", 评语: {data.get('comment', '')}" if data.get('comment') else ""))
     db.session.commit()
     return jsonify({"msg": "打分成功"})
 

@@ -207,7 +207,15 @@ class Task(db.Model):
     main_task = db.Column(db.String(300), nullable=False, comment="主要任务名称")
     scoring_note = db.Column(db.Text, comment="评分说明")
     review_period = db.Column(db.String(50), nullable=False, comment="晾晒周期: monthly/quarterly/semiannual/annual")
-    status = db.Column(db.String(20), default="pending", comment="状态: pending/submitted/reviewed")
+    status = db.Column(db.String(20), default="pending", comment="状态: draft/pending/submitted/rejected/reviewed/confirmed/completed")
+    # v1.5 新增字段
+    rejection_reason = db.Column(db.Text, nullable=True, comment="驳回原因")
+    task_source = db.Column(db.String(20), default="direct", comment="任务来源: direct/dispatched/self_declared")
+    distributed_at = db.Column(db.DateTime, nullable=True, comment="分发时间")
+    distributed_by = db.Column(db.Integer, nullable=True, comment="分发人ID")
+    confirmed_at = db.Column(db.DateTime, nullable=True, comment="确认纳入任务书时间")
+    completed_at = db.Column(db.DateTime, nullable=True, comment="完成时间")
+    snapshot_data = db.Column(db.Text, nullable=True, comment="确认时数据快照(JSON)")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     plan = db.relationship("Plan", back_populates="tasks")
@@ -217,6 +225,7 @@ class Task(db.Model):
     submissions = db.relationship("TaskSubmission", back_populates="task", cascade="all, delete-orphan")
     scores = db.relationship("TaskScore", back_populates="task", cascade="all, delete-orphan")
     quality_issues = db.relationship("QualityIssue", back_populates="task", cascade="all, delete-orphan")
+    process_logs = db.relationship("ProcessLog", back_populates="task", cascade="all, delete-orphan")
 
 
 class TaskSubmission(db.Model):
@@ -238,6 +247,26 @@ class TaskScore(db.Model):
     scored_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     task = db.relationship("Task", back_populates="scores")
+
+
+# ==================== 操作日志 (v1.5) ====================
+
+
+class ProcessLog(db.Model):
+    """任务操作日志：记录每次状态变更，用于审计追溯"""
+    __tablename__ = "process_log"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    task_id = db.Column(db.Integer, db.ForeignKey("task.id"), nullable=False)
+    plan_id = db.Column(db.Integer, db.ForeignKey("plan.id"), nullable=False, comment="关联方案(冗余，方便按方案查询)")
+    action = db.Column(db.String(50), nullable=False, comment="操作类型: submit/reject/resubmit/review/confirm/complete/distribute")
+    from_status = db.Column(db.String(20), nullable=True, comment="变更前状态")
+    to_status = db.Column(db.String(20), nullable=False, comment="变更后状态")
+    operator_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, comment="操作人ID")
+    comment = db.Column(db.Text, nullable=True, comment="操作备注/驳回原因")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    task = db.relationship("Task", back_populates="process_logs")
+    operator = db.relationship("User")
 
 
 # ==================== 干部管理 ====================

@@ -99,6 +99,8 @@ def build_task_query(
         if not is_publisher:
             if user.current_identity == "assessed":
                 q = q.filter(Task.unit_id == user.unit_id)
+                # 被考核单位看不到 draft 状态的任务
+                q = q.filter(Task.status != "draft")
             elif user.current_identity == "assessor":
                 q = q.filter(Task.assessor_unit_id == user.unit_id)
 
